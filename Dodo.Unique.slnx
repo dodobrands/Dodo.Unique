@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/root/">
+    <File Path="Directory.Build.props" />
+    <File Path="Directory.Packages.props" />
+    <File Path="NuGet.config" />
+    <File Path="README.md" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Dodo.Unique/Dodo.Unique.csproj" />
+    <Project Path="src/Dodo.Unique.NewtonsoftJson/Dodo.Unique.NewtonsoftJson.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Dodo.Unique.Tests/Dodo.Unique.Tests.csproj" />
+    <Project Path="tests/Dodo.Unique.NewtonsoftJson.Tests/Dodo.Unique.NewtonsoftJson.Tests.csproj" />
+  </Folder>
+</Solution>

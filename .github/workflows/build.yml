@@ -1,0 +1,112 @@
+name: build
+
+on:
+  push:
+    branches:
+      - main
+      - "feat/**"
+      - "fix/**"
+      - "chore/**"
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: actions/setup-dotnet@v5.1.0
+        with:
+          dotnet-version: |
+            9.0.x
+            10.0.x
+
+      - name: dotnet restore
+        run: dotnet restore Dodo.Unique.slnx
+
+      - name: dotnet build
+        run: dotnet build Dodo.Unique.slnx -c Release --no-restore
+
+      # `dotnet test` on .NET 10 SDK no longer supports the VSTest target. TUnit is a
+      # Microsoft.Testing.Platform application, so each test project is a self-hosting exe — run
+      # them directly. Both projects target net10.0; setup-dotnet provides the matching runtime.
+      - name: run Dodo.Unique tests
+        run: dotnet run --project tests/Dodo.Unique.Tests/Dodo.Unique.Tests.csproj -c Release --no-build
+      - name: run Dodo.Unique.NewtonsoftJson tests
+        run: dotnet run --project tests/Dodo.Unique.NewtonsoftJson.Tests/Dodo.Unique.NewtonsoftJson.Tests.csproj -c Release --no-build
+
+  nuget-push:
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - uses: actions/setup-dotnet@v5.1.0
+        with:
+          dotnet-version: |
+            9.0.x
+            10.0.x
+          source-url: ${{ secrets.NUGET_SOURCE }}
+        env:
+          NUGET_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+
+      - name: Get branch name
+        id: branch_name
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          BRANCH_NAME="$(echo "$REF" | tr "[:upper:]" "[:lower:]" | sed -r 's#refs/[^\/]*/##;s/[~\^]+//g;s/[^a-zA-Z0-9.]+/-/g;s/^-+\|-+$//g;s/^-*//;s/-*$//' | cut -c1-63)"
+          echo "branch_name=${BRANCH_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: dotnet pack
+        env:
+          BRANCH_NAME: ${{ steps.branch_name.outputs.branch_name }}
+        run: |
+          declare -a arr=(
+            "src/Dodo.Unique/Dodo.Unique.csproj"
+            "src/Dodo.Unique.NewtonsoftJson/Dodo.Unique.NewtonsoftJson.csproj"
+          )
+          for i in "${arr[@]}"; do
+            if [[ "${BRANCH_NAME}" = "main" ]]; then
+              dotnet pack -c Release -p:IsPackable=true --output nupkgs "$i"
+            else
+              dotnet pack -c Release -p:IsPackable=true --output nupkgs --version-suffix "${BRANCH_NAME}" "$i"
+            fi
+          done
+
+      - name: Delete existing prerelease packages from feed
+        if: github.ref_name != 'main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for nupkg in nupkgs/*.nupkg; do
+            NUSPEC=$(unzip -p "$nupkg" '*.nuspec')
+            PKG_ID=$(echo "$NUSPEC" | grep -oP '<id>\K[^<]+')
+            PKG_VER=$(echo "$NUSPEC" | grep -oP '<version>\K[^<]+')
+            if [[ "$PKG_VER" == *-* ]]; then
+              VER_ID=$(gh api "orgs/dodopizza/packages/nuget/${PKG_ID}/versions" \
+                --jq ".[] | select(.name == \"${PKG_VER}\") | .id" 2>/dev/null || true)
+              if [ -n "$VER_ID" ]; then
+                echo "Deleting ${PKG_ID}@${PKG_VER} (id: ${VER_ID})"
+                gh api -X DELETE "orgs/dodopizza/packages/nuget/${PKG_ID}/versions/${VER_ID}" || true
+              fi
+            fi
+          done
+
+      - name: dotnet nuget push
+        run: dotnet nuget push "nupkgs/*.nupkg" --source ${{ secrets.NUGET_SOURCE }} --api-key ${{ secrets.GITHUB_TOKEN }} --skip-duplicate

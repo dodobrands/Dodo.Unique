@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <!-- Clear the inherited multi-targeting so 'dotnet run' (used in CI) treats this as a single-TFM exe. -->
+        <TargetFrameworks></TargetFrameworks>
+        <TargetFramework>net10.0</TargetFramework>
+        <OutputType>Exe</OutputType>
+        <IsPackable>false</IsPackable>
+        <IsTestProject>true</IsTestProject>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\..\src\Dodo.Unique.NewtonsoftJson\Dodo.Unique.NewtonsoftJson.csproj" />
+    </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="TUnit.Engine" />
+        <PackageReference Include="TUnit.Assertions" />
+        <PackageReference Include="Newtonsoft.Json" />
+    </ItemGroup>
+</Project>
