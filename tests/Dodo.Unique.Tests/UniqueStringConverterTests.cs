@@ -222,15 +222,6 @@ public sealed class UniqueStringConverterTests
 	}
 
 	[Test]
-	public async Task Read_throws_JsonException_for_non_string_token()
-	{
-		var options = OptionsWithPool(new UniqueStringPool(TimeSpan.FromHours(1)));
-
-		await Assert.That(() => JsonSerializer.Deserialize<string>("42", options)).Throws<JsonException>();
-		await Assert.That(() => JsonSerializer.Deserialize<string>("true", options)).Throws<JsonException>();
-	}
-
-	[Test]
 	public async Task Convenience_constructor_uses_pool_options_independently_of_stack_buffer()
 	{
 		// Pool caches up to MaxLength=600; buffer caps at 512. Strings up to ~512 bytes

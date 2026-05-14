@@ -57,8 +57,6 @@ public sealed class UniqueStringConverter: JsonConverter<string>
     {
         if (reader.TokenType == JsonTokenType.Null)
             return null;
-        if (reader.TokenType != JsonTokenType.String)
-            throw new JsonException($"Expected String, got {reader.TokenType}.");
 
         var byteLen = reader.HasValueSequence ? reader.ValueSequence.Length : reader.ValueSpan.Length;
         if (byteLen == 0)
