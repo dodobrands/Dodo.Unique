@@ -166,6 +166,12 @@ public sealed class UniqueStringPool
 			// _writers below sees any writer that already incremented, and that writer's
 			// read of _next sees our seal. Plain Volatile.Write/Read alone is not
 			// sequentially consistent under ECMA-335, so this fence is load-bearing.
+			//
+			// "Dekker's-style" here refers to the store-load fence pattern derived from
+			// Dekker's mutex (store own flag → full fence → load other's flag), not the
+			// full 3-variable mutex with a turn tie-breaker. We use the pattern only to
+			// mutually exclude "writer-in-TryAdd on oldHot" from "rotator-snapshotting
+			// oldHot"; writers do not contend with each other, so no turn is needed.
 			Interlocked.MemoryBarrier();
 		}
 
