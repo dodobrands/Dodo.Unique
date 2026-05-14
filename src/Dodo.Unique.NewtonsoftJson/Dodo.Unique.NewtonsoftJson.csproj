@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
         <PackageId>Dodo.Unique.NewtonsoftJson</PackageId>
-        <PackageVersion>1.0.0</PackageVersion>
+        <VersionPrefix>1.0.0</VersionPrefix>
         <Description>Newtonsoft.Json addon for Dodo.Unique: a JsonConverter&lt;string&gt; that routes deserialized strings through a UniqueStringPool.</Description>
         <PackageTags>string;canonicalization;interning;deduplication;json;newtonsoft</PackageTags>
         <IsPackable>true</IsPackable>
