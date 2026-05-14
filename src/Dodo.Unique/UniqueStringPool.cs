@@ -18,9 +18,8 @@ namespace Dodo.Unique;
 public sealed class UniqueStringPool
 {
 	private readonly long _steadyIntervalMs;
-	private long _expiryMs;
-	private ConcurrentDictionary<string, string> _hot = new(StringComparer.Ordinal);
-	private FrozenDictionary<string, string> _cold = FrozenDictionary<string, string>.Empty;
+	private readonly Lock _rotateLock = new();
+	private State _state;
 
 	/// <summary>
 	/// Creates a new pool.
@@ -42,7 +41,8 @@ public sealed class UniqueStringPool
 		ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxLength);
 		MaxLength = maxLength;
 		_steadyIntervalMs = Math.Max(1, (long)minRetention.TotalMilliseconds);
-		_expiryMs = Environment.TickCount64 + _steadyIntervalMs;
+		_state = new State(new Generation(), FrozenGeneration.Empty,
+			Environment.TickCount64 + _steadyIntervalMs);
 	}
 
 	/// <summary>
@@ -69,22 +69,14 @@ public sealed class UniqueStringPool
 		if (chars.Length > MaxLength)
 			return new string(chars);
 
-		var hot = Volatile.Read(ref _hot);
-		var hotAlt = hot.GetAlternateLookup<ReadOnlySpan<char>>();
-		if (hotAlt.TryGetValue(chars, out var hit))
+		var state = Volatile.Read(ref _state);
+		if (state.Hot.TryGet(chars, out var hit))
 			return hit;
-
-		var cold = Volatile.Read(ref _cold);
-		var coldAlt = cold.GetAlternateLookup<ReadOnlySpan<char>>();
-		if (coldAlt.TryGetValue(chars, out hit))
-		{
-			MaybeRotate();
-			Volatile.Read(ref _hot).TryAdd(hit, hit);
-			return hit;
-		}
+		if (state.Cold.TryGet(chars, out hit))
+			return state.Hot.AddOrGet(hit.AsSpan(), hit);
 
 		MaybeRotate();
-		return InsertIntoHot(chars);
+		return Volatile.Read(ref _state).Hot.AddOrGet(chars, new string(chars));
 	}
 
 	public string Make(string value)
@@ -95,48 +87,139 @@ public sealed class UniqueStringPool
 		if (value.Length > MaxLength)
 			return value;
 
-		var hot = Volatile.Read(ref _hot);
-		if (hot.TryGetValue(value, out var hit))
+		var state = Volatile.Read(ref _state);
+		if (state.Hot.TryGet(value, out var hit))
 			return hit;
-
-		var cold = Volatile.Read(ref _cold);
-		if (cold.TryGetValue(value, out hit))
-		{
-			MaybeRotate();
-			Volatile.Read(ref _hot).TryAdd(hit, hit);
-			return hit;
-		}
+		if (state.Cold.TryGet(value, out hit))
+			return state.Hot.AddOrGet(hit.AsSpan(), hit);
 
 		MaybeRotate();
-		return Volatile.Read(ref _hot).GetOrAdd(value, value);
-	}
-
-	private string InsertIntoHot(ReadOnlySpan<char> span)
-	{
-		var hot = Volatile.Read(ref _hot);
-		if (hot.GetAlternateLookup<ReadOnlySpan<char>>().TryGetValue(span, out var existing))
-			return existing;
-
-		var str = new string(span);
-		return hot.GetOrAdd(str, str);
+		return Volatile.Read(ref _state).Hot.AddOrGet(value.AsSpan(), value);
 	}
 
 	private void MaybeRotate()
 	{
 		var nowMs = Environment.TickCount64;
-		var exp = Volatile.Read(ref _expiryMs);
-		if (nowMs < exp ||
-			Interlocked.CompareExchange(ref _expiryMs, nowMs + _steadyIntervalMs, exp) != exp)
+		if (nowMs < Volatile.Read(ref _state).RotateAtMs)
 			return;
 
-		var hot = Volatile.Read(ref _hot);
-		var newCold = hot.ToFrozenDictionary(StringComparer.Ordinal);
+		// Lock instead of CAS on _expiryMs: rotation builds a frozen snapshot (work
+		// proportional to entry count) — serialising the rare rotation is cheaper than
+		// risking two concurrent rotations doing duplicate snapshot work.
+		lock (_rotateLock)
+		{
+			var current = Volatile.Read(ref _state);
+			if (nowMs < current.RotateAtMs)
+				return;
 
-		var seed = newCold.Count + (newCold.Count >> 2);
-		var newHot = new ConcurrentDictionary<string, string>(
-			concurrencyLevel: Environment.ProcessorCount, capacity: seed, comparer: StringComparer.Ordinal);
+			var newHot = new Generation();
+			current.Hot.SealTo(newHot);
+			// Dekker's-style drain: by the time SealTo's barrier and the writers' own
+			// Interlocked fences synchronise, any writer that incremented _writers will
+			// be observed here; any writer that hadn't incremented yet observes the seal
+			// and forwards to newHot. Spinning until _writers == 0 means no writer is
+			// inside oldHot's TryAdd critical section — the snapshot below is sound.
+			current.Hot.WaitForWritersToDrain();
+			var newCold = new FrozenGeneration(
+				current.Hot.Map.ToFrozenDictionary(StringComparer.Ordinal));
 
-		Volatile.Write(ref _cold, newCold);
-		Volatile.Write(ref _hot, newHot);
+			Volatile.Write(ref _state,
+				new State(newHot, newCold, nowMs + _steadyIntervalMs));
+		}
+	}
+
+	private sealed class State
+	{
+		internal readonly Generation Hot;
+		internal readonly FrozenGeneration Cold;
+		internal readonly long RotateAtMs;
+
+		internal State(Generation hot, FrozenGeneration cold, long rotateAtMs)
+		{
+			Hot = hot;
+			Cold = cold;
+			RotateAtMs = rotateAtMs;
+		}
+	}
+
+	private sealed class Generation
+	{
+		internal readonly ConcurrentDictionary<string, string> Map;
+		private readonly ConcurrentDictionary<string, string>.AlternateLookup<ReadOnlySpan<char>> _lookup;
+		private Generation? _next;
+		private int _writers;
+
+		internal Generation()
+		{
+			Map = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
+			_lookup = Map.GetAlternateLookup<ReadOnlySpan<char>>();
+		}
+
+		internal bool TryGet(ReadOnlySpan<char> key, out string value) =>
+			_lookup.TryGetValue(key, out value!);
+
+		internal void SealTo(Generation next)
+		{
+			Volatile.Write(ref _next, next);
+			// Pairs with the writer's Interlocked.Increment(_writers) on the other side
+			// to form a Dekker's-style synchronisation: after this fence, our read of
+			// _writers below sees any writer that already incremented, and that writer's
+			// read of _next sees our seal. Plain Volatile.Write/Read alone is not
+			// sequentially consistent under ECMA-335, so this fence is load-bearing.
+			Interlocked.MemoryBarrier();
+		}
+
+		internal void WaitForWritersToDrain()
+		{
+			var spin = new SpinWait();
+			while (Volatile.Read(ref _writers) > 0)
+				spin.SpinOnce();
+		}
+
+		internal string AddOrGet(ReadOnlySpan<char> key, string candidate)
+		{
+			// Fast path: already sealed — forward without touching the counter.
+			var sealedTo = Volatile.Read(ref _next);
+			if (sealedTo != null)
+				return sealedTo.AddOrGet(key, candidate);
+
+			// Register as in-flight writer. Interlocked.Increment is a full fence;
+			// it pairs with the rotator's MemoryBarrier in SealTo (see comment there).
+			Interlocked.Increment(ref _writers);
+			try
+			{
+				sealedTo = Volatile.Read(ref _next);
+				if (sealedTo != null)
+					return sealedTo.AddOrGet(key, candidate);
+
+				while (true)
+				{
+					if (_lookup.TryGetValue(key, out var existing))
+						return existing;
+					if (Map.TryAdd(candidate, candidate))
+						return candidate;
+				}
+			}
+			finally
+			{
+				Interlocked.Decrement(ref _writers);
+			}
+		}
+	}
+
+	private sealed class FrozenGeneration
+	{
+		internal static readonly FrozenGeneration Empty =
+			new(FrozenDictionary<string, string>.Empty);
+
+		private readonly FrozenDictionary<string, string>.AlternateLookup<ReadOnlySpan<char>> _lookup;
+
+		internal FrozenGeneration(FrozenDictionary<string, string> map)
+		{
+			_lookup = map.GetAlternateLookup<ReadOnlySpan<char>>();
+		}
+
+		internal bool TryGet(ReadOnlySpan<char> key, out string value) =>
+			_lookup.TryGetValue(key, out value!);
 	}
 }
