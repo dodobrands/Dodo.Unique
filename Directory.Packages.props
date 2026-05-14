@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project>
+    <ItemGroup>
+        <PackageVersion Include="Newtonsoft.Json" Version="13.0.3" />
+    </ItemGroup>
+    <ItemGroup Label="Tests">
+        <PackageVersion Include="TUnit" Version="1.44.0" />
+    </ItemGroup>
+</Project>
