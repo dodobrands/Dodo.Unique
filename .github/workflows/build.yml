@@ -37,8 +37,13 @@ jobs:
       - name: dotnet build
         run: dotnet build Dodo.Unique.slnx -c Release --no-restore
 
-      - name: dotnet test
-        run: dotnet test Dodo.Unique.slnx -c Release --no-build --verbosity normal
+      # `dotnet test` on .NET 10 SDK no longer supports the VSTest target. TUnit is a
+      # Microsoft.Testing.Platform application, so each test project is a self-hosting exe — run
+      # them directly. Both projects target net10.0; setup-dotnet provides the matching runtime.
+      - name: run Dodo.Unique tests
+        run: dotnet run --project tests/Dodo.Unique.Tests/Dodo.Unique.Tests.csproj -c Release --no-build
+      - name: run Dodo.Unique.NewtonsoftJson tests
+        run: dotnet run --project tests/Dodo.Unique.NewtonsoftJson.Tests/Dodo.Unique.NewtonsoftJson.Tests.csproj -c Release --no-build
 
   nuget-push:
     needs: build
