@@ -4,6 +4,13 @@
         <PackageVersion Include="Newtonsoft.Json" Version="13.0.3" />
     </ItemGroup>
     <ItemGroup Label="Tests">
-        <PackageVersion Include="TUnit" Version="1.44.0" />
+        <!--
+          The TUnit meta-package declares its TUnit.Engine dependency with exclude="Build,Analyzers",
+          which strips the engine's MSBuild .props (registers TUnit's MTP hook) and source
+          generators (recognizes [Test] attributes). Reference TUnit.Engine and TUnit.Assertions
+          directly so build + analyzer assets flow correctly.
+        -->
+        <PackageVersion Include="TUnit.Engine" Version="1.44.0" />
+        <PackageVersion Include="TUnit.Assertions" Version="1.44.0" />
     </ItemGroup>
 </Project>
