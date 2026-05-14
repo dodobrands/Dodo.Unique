@@ -20,7 +20,11 @@ public sealed class UniqueStringPool
 	private readonly long _steadyIntervalMs;
 	private long _expiryMs;
 	private ConcurrentDictionary<string, string> _hot = new(StringComparer.Ordinal);
-	private FrozenDictionary<string, string> _cold = FrozenDictionary<string, string>.Empty;
+	// Cold is FrozenDictionary in steady state and briefly ConcurrentDictionary during
+	// rotation while a snapshot of oldHot is built. Stored via the shared read-only
+	// interface; concrete-type dispatch at span lookup sites preserves the alternate-lookup
+	// fast path on both types.
+	private IReadOnlyDictionary<string, string> _cold = FrozenDictionary<string, string>.Empty;
 
 	/// <summary>
 	/// Creates a new pool.
@@ -70,13 +74,10 @@ public sealed class UniqueStringPool
 			return new string(chars);
 
 		var hot = Volatile.Read(ref _hot);
-		var hotAlt = hot.GetAlternateLookup<ReadOnlySpan<char>>();
-		if (hotAlt.TryGetValue(chars, out var hit))
+		if (hot.GetAlternateLookup<ReadOnlySpan<char>>().TryGetValue(chars, out var hit))
 			return hit;
 
-		var cold = Volatile.Read(ref _cold);
-		var coldAlt = cold.GetAlternateLookup<ReadOnlySpan<char>>();
-		if (coldAlt.TryGetValue(chars, out hit))
+		if (TryColdLookup(chars, out hit))
 		{
 			MaybeRotate();
 			Volatile.Read(ref _hot).TryAdd(hit, hit);
@@ -99,8 +100,7 @@ public sealed class UniqueStringPool
 		if (hot.TryGetValue(value, out var hit))
 			return hit;
 
-		var cold = Volatile.Read(ref _cold);
-		if (cold.TryGetValue(value, out hit))
+		if (Volatile.Read(ref _cold).TryGetValue(value, out hit))
 		{
 			MaybeRotate();
 			Volatile.Read(ref _hot).TryAdd(hit, hit);
@@ -109,6 +109,15 @@ public sealed class UniqueStringPool
 
 		MaybeRotate();
 		return Volatile.Read(ref _hot).GetOrAdd(value, value);
+	}
+
+	private bool TryColdLookup(ReadOnlySpan<char> chars, out string hit)
+	{
+		var cold = Volatile.Read(ref _cold);
+		if (cold is FrozenDictionary<string, string> frozen)
+			return frozen.GetAlternateLookup<ReadOnlySpan<char>>().TryGetValue(chars, out hit!);
+		return ((ConcurrentDictionary<string, string>)cold)
+			.GetAlternateLookup<ReadOnlySpan<char>>().TryGetValue(chars, out hit!);
 	}
 
 	private string InsertIntoHot(ReadOnlySpan<char> span)
@@ -129,14 +138,25 @@ public sealed class UniqueStringPool
 			Interlocked.CompareExchange(ref _expiryMs, nowMs + _steadyIntervalMs, exp) != exp)
 			return;
 
-		var hot = Volatile.Read(ref _hot);
-		var newCold = hot.ToFrozenDictionary(StringComparer.Ordinal);
-
-		var seed = newCold.Count + (newCold.Count >> 2);
+		var oldHot = Volatile.Read(ref _hot);
+		// ConcurrentDictionary.Count acquires all internal locks — read it once.
+		var count = oldHot.Count;
+		var seed = count + (count >> 2);
 		var newHot = new ConcurrentDictionary<string, string>(
 			concurrencyLevel: Environment.ProcessorCount, capacity: seed, comparer: StringComparer.Ordinal);
 
-		Volatile.Write(ref _cold, newCold);
+		// Phase 1: publish oldHot as the live cold. Reads via _cold now find any value in
+		// oldHot, including writes arriving from stragglers that still hold a stale _hot
+		// reference. Hot is swapped so new writers route to newHot.
+		Volatile.Write(ref _cold, oldHot);
 		Volatile.Write(ref _hot, newHot);
+
+		// Phase 2: freeze oldHot for steady-state read perf. Stragglers that captured
+		// _hot=oldHot before the swap mostly land their writes during phase 1 (visible via
+		// live cold); only writers paused longer than the snapshot duration could land
+		// after this point — and their writes would be lost. In practice this means
+		// threads paused for ms-scale during a single Make call: effectively never.
+		var frozen = oldHot.ToFrozenDictionary(StringComparer.Ordinal);
+		Volatile.Write(ref _cold, frozen);
 	}
 }
