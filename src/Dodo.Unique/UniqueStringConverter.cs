@@ -11,7 +11,7 @@ namespace Dodo.Unique;
 public sealed class UniqueStringConverter: JsonConverter<string>
 {
     // Hard ceiling for the stackalloc buffer (2 KB at sizeof(char)=2). Larger values
-    // risk StackOverflowException on threads with small stacks (ASP.NET workers ~1 MB).
+    // risk StackOverflowException on threads with small stacks.
     private const int MaxStackBufferLength = 1024;
 
     private const int DefaultStackBufferLength = 256;
