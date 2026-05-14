@@ -8,7 +8,7 @@ namespace Dodo.Unique;
 /// <see cref="UniqueStringPool"/>, so repeating field values share a canonical instance.
 /// Writes pass through unchanged.
 /// </summary>
-public sealed class UniqueStringConverter: JsonConverter<string>
+public sealed class UniqueStringConverter: JsonConverter<string?>
 {
     // Hard ceiling for the stackalloc buffer (2 KB at sizeof(char)=2). Larger values
     // risk StackOverflowException on threads with small stacks.
@@ -69,7 +69,7 @@ public sealed class UniqueStringConverter: JsonConverter<string>
         return _pool.Make(buffer[..written]);
     }
 
-    public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options)
+    public override void Write(Utf8JsonWriter writer, string? value, JsonSerializerOptions options)
         => writer.WriteStringValue(value);
 
     public override string ReadAsPropertyName(
@@ -78,6 +78,6 @@ public sealed class UniqueStringConverter: JsonConverter<string>
         JsonSerializerOptions options)
         => Read(ref reader, typeToConvert, options) ?? string.Empty;
 
-    public override void WriteAsPropertyName(Utf8JsonWriter writer, string value, JsonSerializerOptions options)
-        => writer.WritePropertyName(value);
+    public override void WriteAsPropertyName(Utf8JsonWriter writer, string? value, JsonSerializerOptions options)
+        => writer.WritePropertyName(value!);
 }
