@@ -19,9 +19,9 @@ public sealed class UniqueStringPool
 {
 	private readonly long _steadyIntervalMs;
 	private long _expiryMs;
-	private ConcurrentDictionary<string, string> _hot = new(StringComparer.Ordinal);
-	private FrozenDictionary<string, string> _cold = FrozenDictionary<string, string>.Empty;
-	private AltLookupWrapper _hotAlt = new AltLookupWrapper(_hot);
+	private ConcurrentDictionary<string, string> _hot;
+	private AltLookupWrapper _hotAlt;
+	private FrozenDictionary<string, string> _cold;
 
 	/// <summary>
 	/// Creates a new pool.
@@ -44,6 +44,9 @@ public sealed class UniqueStringPool
 		MaxLength = maxLength;
 		_steadyIntervalMs = Math.Max(1, (long)minRetention.TotalMilliseconds);
 		_expiryMs = Environment.TickCount64 + _steadyIntervalMs;
+		_hot = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
+		_hotAlt = new AltLookupWrapper(_hot);
+		_cold = FrozenDictionary<string, string>.Empty;
 	}
 
 	/// <summary>
