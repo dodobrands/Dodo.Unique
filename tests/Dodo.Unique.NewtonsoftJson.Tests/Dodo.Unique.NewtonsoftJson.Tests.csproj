@@ -1,5 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
+        <!-- Clear the inherited multi-targeting so 'dotnet run' (used in CI) treats this as a single-TFM exe. -->
+        <TargetFrameworks></TargetFrameworks>
         <TargetFramework>net10.0</TargetFramework>
         <OutputType>Exe</OutputType>
         <IsPackable>false</IsPackable>
@@ -12,16 +14,5 @@
         <PackageReference Include="TUnit.Engine" />
         <PackageReference Include="TUnit.Assertions" />
         <PackageReference Include="Newtonsoft.Json" />
-    </ItemGroup>
-    <!--
-      TUnit.Engine.props ships this hook registration, but it gets dropped before the
-      SelfRegisteredExtensions generator runs (TUnit 1.44.0 packaging quirk under .NET 10/11 SDK).
-      Re-declare it here so the generator picks it up.
-    -->
-    <ItemGroup>
-        <TestingPlatformBuilderHook Include="6ADF853A-6945-4A06-9A4B-D99BC1DC1094">
-            <DisplayName>TUnit</DisplayName>
-            <TypeFullName>TUnit.Engine.Framework.TestingPlatformBuilderHook</TypeFullName>
-        </TestingPlatformBuilderHook>
     </ItemGroup>
 </Project>
