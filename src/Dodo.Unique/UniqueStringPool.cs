@@ -107,8 +107,7 @@ public sealed class UniqueStringPool
 		}
 
 		MaybeRotate();
-		var hotNow = Volatile.Read(ref _hot);
-		return hotNow.TryAdd(value, value) ? value : hotNow.GetValueOrDefault(value, value);
+		return Volatile.Read(ref _hot).GetOrAdd(value, value);
 	}
 
 	private string InsertIntoHot(ReadOnlySpan<char> span)
@@ -118,7 +117,7 @@ public sealed class UniqueStringPool
 			return existing;
 
 		var str = new string(span);
-		return hot.TryAdd(str, str) ? str : hot.GetValueOrDefault(str, str);
+		return hot.GetOrAdd(str, str);
 	}
 
 	private void MaybeRotate()
