@@ -7,7 +7,7 @@ namespace Dodo.Unique.NewtonsoftJson;
 /// <see cref="UniqueStringPool"/>, so repeating field values share a canonical instance.
 /// Writes pass through unchanged.
 /// </summary>
-public sealed class UniqueJsonStringConverter : JsonConverter<string?>
+public sealed class UniqueJsonStringConverter : JsonConverter<string>
 {
 	private readonly UniqueStringPool _pool;
 
