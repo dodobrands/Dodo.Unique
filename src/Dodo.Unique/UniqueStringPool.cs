@@ -32,7 +32,8 @@ public sealed class UniqueStringPool
 	/// count is bounded by the number of unique inserts during <c>2 * minRetention</c>.
 	/// </param>
 	/// <param name="maxLength">
-	/// Values longer than this bypass the pool and are returned as a fresh <see cref="string"/>.
+	/// Values longer than this bypass canonicalization: <c>Make(string)</c> returns the input
+	/// unchanged, <c>Make(ReadOnlySpan&lt;char&gt;)</c> allocates a fresh <see cref="string"/>.
 	/// Caps per-entry memory cost.
 	/// </param>
 	public UniqueStringPool(TimeSpan minRetention, int maxLength = 256)
