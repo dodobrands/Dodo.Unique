@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Collections.Frozen;
 
 namespace Dodo.Unique;
 
@@ -20,7 +19,12 @@ public sealed class UniqueStringPool
 	private readonly long _steadyIntervalMs;
 	private long _expiryMs;
 	private ConcurrentDictionary<string, string> _hot = new(StringComparer.Ordinal);
-	private FrozenDictionary<string, string> _cold = FrozenDictionary<string, string>.Empty;
+	// Cold is the previous _hot, kept reachable as a live ConcurrentDictionary. Rotation is
+	// a pointer swap — no snapshot, no FrozenDictionary. Stale writers that still hold a
+	// reference to oldHot keep writing into what is now _cold, so their writes remain
+	// findable. Eliminates the lost-write race at the cost of slightly slower cold reads
+	// (ConcurrentDictionary lock-free lookup vs FrozenDictionary perfect-hash).
+	private ConcurrentDictionary<string, string> _cold = new(StringComparer.Ordinal);
 
 	/// <summary>
 	/// Creates a new pool.
@@ -129,14 +133,17 @@ public sealed class UniqueStringPool
 			Interlocked.CompareExchange(ref _expiryMs, nowMs + _steadyIntervalMs, exp) != exp)
 			return;
 
-		var hot = Volatile.Read(ref _hot);
-		var newCold = hot.ToFrozenDictionary(StringComparer.Ordinal);
-
-		var seed = newCold.Count + (newCold.Count >> 2);
+		var oldHot = Volatile.Read(ref _hot);
+		// ConcurrentDictionary.Count acquires all internal locks — read it once.
+		var count = oldHot.Count;
+		var seed = count + (count >> 2);
 		var newHot = new ConcurrentDictionary<string, string>(
 			concurrencyLevel: Environment.ProcessorCount, capacity: seed, comparer: StringComparer.Ordinal);
 
-		Volatile.Write(ref _cold, newCold);
+		// Cold first, hot second. By release/acquire, any reader observing newHot must also
+		// observe _cold = oldHot — so anything in oldHot (including writes that land there
+		// after the swap from threads holding stale references) remains findable.
+		Volatile.Write(ref _cold, oldHot);
 		Volatile.Write(ref _hot, newHot);
 	}
 }
