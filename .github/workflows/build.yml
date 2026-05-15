@@ -7,13 +7,14 @@ on:
       - "feat/**"
       - "fix/**"
       - "chore/**"
+    tags:
+      - "v*.*.*"
   pull_request:
     branches:
       - main
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   build:
@@ -45,11 +46,19 @@ jobs:
       - name: run Dodo.Unique.NewtonsoftJson tests
         run: dotnet run --project tests/Dodo.Unique.NewtonsoftJson.Tests/Dodo.Unique.NewtonsoftJson.Tests.csproj -c Release --no-build
 
-  nuget-push:
+  publish:
     needs: build
-    if: github.event_name == 'push'
+    # Tag-only publish: `git tag v1.2.3 && git push --tags` is the release trigger.
+    # PackageVersion in each .csproj must match the tag (verified below).
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # id-token: write enables OIDC — GitHub mints a token whose claims (repo, workflow,
+    # ref, environment) NuGet.org matches against the Trusted Publisher policy.
+    permissions:
+      id-token: write
+      contents: read
+    environment: nuget-org
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -61,52 +70,39 @@ jobs:
           dotnet-version: |
             9.0.x
             10.0.x
-          source-url: ${{ secrets.NUGET_SOURCE }}
-        env:
-          NUGET_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
 
-      - name: Get branch name
-        id: branch_name
+      - name: Verify tag matches PackageVersion
         env:
-          REF: ${{ github.ref }}
+          TAG: ${{ github.ref_name }}
         run: |
-          BRANCH_NAME="$(echo "$REF" | tr "[:upper:]" "[:lower:]" | sed -r 's#refs/[^\/]*/##;s/[~\^]+//g;s/[^a-zA-Z0-9.]+/-/g;s/^-+\|-+$//g;s/^-*//;s/-*$//' | cut -c1-63)"
-          echo "branch_name=${BRANCH_NAME}" >> "$GITHUB_OUTPUT"
+          EXPECTED="${TAG#v}"
+          for csproj in src/Dodo.Unique/Dodo.Unique.csproj src/Dodo.Unique.NewtonsoftJson/Dodo.Unique.NewtonsoftJson.csproj; do
+            ACTUAL=$(grep -oP '<PackageVersion>\K[^<]+' "$csproj")
+            if [ "$ACTUAL" != "$EXPECTED" ]; then
+              echo "::error file=$csproj::PackageVersion '$ACTUAL' does not match tag '$EXPECTED'"
+              exit 1
+            fi
+          done
 
       - name: dotnet pack
-        env:
-          BRANCH_NAME: ${{ steps.branch_name.outputs.branch_name }}
         run: |
-          declare -a arr=(
-            "src/Dodo.Unique/Dodo.Unique.csproj"
-            "src/Dodo.Unique.NewtonsoftJson/Dodo.Unique.NewtonsoftJson.csproj"
-          )
-          for i in "${arr[@]}"; do
-            if [[ "${BRANCH_NAME}" = "main" ]]; then
-              dotnet pack -c Release -p:IsPackable=true --output nupkgs "$i"
-            else
-              dotnet pack -c Release -p:IsPackable=true --output nupkgs --version-suffix "${BRANCH_NAME}" "$i"
-            fi
-          done
+          dotnet pack src/Dodo.Unique/Dodo.Unique.csproj -c Release -p:IsPackable=true --output nupkgs
+          dotnet pack src/Dodo.Unique.NewtonsoftJson/Dodo.Unique.NewtonsoftJson.csproj -c Release -p:IsPackable=true --output nupkgs
 
-      - name: Delete existing prerelease packages from feed
-        if: github.ref_name != 'main'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          for nupkg in nupkgs/*.nupkg; do
-            NUSPEC=$(unzip -p "$nupkg" '*.nuspec')
-            PKG_ID=$(echo "$NUSPEC" | grep -oP '<id>\K[^<]+')
-            PKG_VER=$(echo "$NUSPEC" | grep -oP '<version>\K[^<]+')
-            if [[ "$PKG_VER" == *-* ]]; then
-              VER_ID=$(gh api "orgs/dodopizza/packages/nuget/${PKG_ID}/versions" \
-                --jq ".[] | select(.name == \"${PKG_VER}\") | .id" 2>/dev/null || true)
-              if [ -n "$VER_ID" ]; then
-                echo "Deleting ${PKG_ID}@${PKG_VER} (id: ${VER_ID})"
-                gh api -X DELETE "orgs/dodopizza/packages/nuget/${PKG_ID}/versions/${VER_ID}" || true
-              fi
-            fi
-          done
+      # Exchanges the GitHub OIDC token for a short-lived NuGet.org API key.
+      # Requires a Trusted Publisher policy registered on the NuGet.org account
+      # (see PR body for the one-time setup steps).
+      - name: NuGet trusted-publisher login
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ vars.NUGET_USER }}
 
       - name: dotnet nuget push
-        run: dotnet nuget push "nupkgs/*.nupkg" --source ${{ secrets.NUGET_SOURCE }} --api-key ${{ secrets.GITHUB_TOKEN }} --skip-duplicate
+        env:
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+        run: |
+          dotnet nuget push "nupkgs/*.nupkg" \
+            --source https://api.nuget.org/v3/index.json \
+            --api-key "$NUGET_API_KEY" \
+            --skip-duplicate
