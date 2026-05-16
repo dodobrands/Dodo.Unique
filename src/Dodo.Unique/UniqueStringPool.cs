@@ -18,7 +18,7 @@ namespace Dodo.Unique;
 public sealed class UniqueStringPool
 {
 	private readonly long _steadyIntervalMs;
-	private readonly Lock _rotateLock = new();
+	private int _rotationInProgress;
 	private State _state;
 
 	/// <summary>
@@ -103,10 +103,16 @@ public sealed class UniqueStringPool
 		if (nowMs < Volatile.Read(ref _state).RotateAtMs)
 			return;
 
-		// Lock instead of CAS on _expiryMs: rotation builds a frozen snapshot (work
-		// proportional to entry count) — serialising the rare rotation is cheaper than
-		// risking two concurrent rotations doing duplicate snapshot work.
-		lock (_rotateLock)
+		// CAS-claim instead of lock: losers bail and let their Make() continue against the
+		// still-valid old state instead of parking for the rotator's snapshot build (which
+		// is hundreds of µs on a 10k-entry pool, dominated by ToFrozenDictionary's hash
+		// analysis). The claim is mutually exclusive — only one rotation runs at a time —
+		// and the defensive re-check below covers being preempted between the outer
+		// timestamp check and the claim itself.
+		if (Interlocked.CompareExchange(ref _rotationInProgress, 1, 0) != 0)
+			return;
+
+		try
 		{
 			var current = Volatile.Read(ref _state);
 			if (nowMs < current.RotateAtMs)
@@ -125,6 +131,10 @@ public sealed class UniqueStringPool
 
 			Volatile.Write(ref _state,
 				new State(newHot, newCold, nowMs + _steadyIntervalMs));
+		}
+		finally
+		{
+			Volatile.Write(ref _rotationInProgress, 0);
 		}
 	}
 
