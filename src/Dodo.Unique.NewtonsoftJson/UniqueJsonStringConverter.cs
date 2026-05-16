@@ -9,30 +9,30 @@ namespace Dodo.Unique.NewtonsoftJson;
 /// </summary>
 public sealed class UniqueJsonStringConverter : JsonConverter<string?>
 {
-	private readonly UniqueStringPool _pool;
+    private readonly UniqueStringPool _pool;
 
-	public UniqueJsonStringConverter(UniqueStringPool pool)
-	{
-		ArgumentNullException.ThrowIfNull(pool);
-		_pool = pool;
-	}
+    public UniqueJsonStringConverter(UniqueStringPool pool)
+    {
+        ArgumentNullException.ThrowIfNull(pool);
+        _pool = pool;
+    }
 
-	public override string? ReadJson(
-		JsonReader reader,
-		Type objectType,
-		string? existingValue,
-		bool hasExistingValue,
-		JsonSerializer serializer)
-	{
-		return reader.TokenType switch
-		{
-			JsonToken.Null => null,
-			JsonToken.String => _pool.Make((string)reader.Value!),
-			_ => throw new JsonSerializationException(
-				$"Unexpected token {reader.TokenType} when reading string at path '{reader.Path}'."),
-		};
-	}
+    public override string? ReadJson(
+        JsonReader reader,
+        Type objectType,
+        string? existingValue,
+        bool hasExistingValue,
+        JsonSerializer serializer)
+    {
+        return reader.TokenType switch
+        {
+            JsonToken.Null => null,
+            JsonToken.String => _pool.Make((string)reader.Value!),
+            _ => throw new JsonSerializationException(
+                $"Unexpected token {reader.TokenType} when reading string at path '{reader.Path}'."),
+        };
+    }
 
-	public override void WriteJson(JsonWriter writer, string? value, JsonSerializer serializer)
-		=> writer.WriteValue(value);
+    public override void WriteJson(JsonWriter writer, string? value, JsonSerializer serializer)
+        => writer.WriteValue(value);
 }
