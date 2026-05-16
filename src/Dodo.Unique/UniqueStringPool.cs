@@ -41,8 +41,7 @@ public sealed class UniqueStringPool
 		ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxLength);
 		MaxLength = maxLength;
 		_steadyIntervalMs = Math.Max(1, (long)minRetention.TotalMilliseconds);
-		_state = new State(new Generation(), FrozenGeneration.Empty,
-			Environment.TickCount64 + _steadyIntervalMs);
+		_state = new State(new Generation(), FrozenGeneration.Empty, Environment.TickCount64 + _steadyIntervalMs);
 	}
 
 	/// <summary>
@@ -50,9 +49,7 @@ public sealed class UniqueStringPool
 	/// this overload for readability or when more knobs are added.
 	/// </summary>
 	public UniqueStringPool(UniqueStringPoolOptions options)
-		: this(
-			(options ?? throw new ArgumentNullException(nameof(options))).MinRetention,
-			options.MaxLength)
+		: this((options ?? throw new ArgumentNullException(nameof(options))).MinRetention, options.MaxLength)
 	{
 	}
 
@@ -73,18 +70,15 @@ public sealed class UniqueStringPool
 		if (state.Hot.TryGet(chars, out var hit))
 			return hit;
 		if (state.Cold.TryGet(chars, out hit))
-			return state.Hot.AddOrGet(hit, hit);
+			return state.Hot.AddOrGet(hit);
 
 		MaybeRotate();
-		// Re-check cold against the latest state: rotation may have folded another
-		// writer's commit from oldHot into newCold while we were between our initial
-		// cold check and here. Without this, we'd mint a second canonical instance
-		// into newHot for a value already present in newCold.
+
 		var latest = Volatile.Read(ref _state);
 		if (latest.Cold.TryGet(chars, out hit))
-			return latest.Hot.AddOrGet(hit, hit);
+			return latest.Hot.AddOrGet(hit);
 		var value = new string(chars);
-		return latest.Hot.AddOrGet(chars, value);
+		return latest.Hot.AddOrGet(value);
 	}
 
 	public string Make(string value)
@@ -99,13 +93,14 @@ public sealed class UniqueStringPool
 		if (state.Hot.TryGet(value, out var hit))
 			return hit;
 		if (state.Cold.TryGet(value, out hit))
-			return state.Hot.AddOrGet(hit, hit);
+			return state.Hot.AddOrGet(hit);
 
 		MaybeRotate();
+
 		var latest = Volatile.Read(ref _state);
 		return latest.Cold.TryGet(value, out hit)
-			? latest.Hot.AddOrGet(hit, hit)
-			: latest.Hot.AddOrGet(value, value);
+			? latest.Hot.AddOrGet(hit)
+			: latest.Hot.AddOrGet(value);
 	}
 
 	private void MaybeRotate()
@@ -114,12 +109,6 @@ public sealed class UniqueStringPool
 		if (nowMs < Volatile.Read(ref _state).RotateAtMs)
 			return;
 
-		// CAS-claim instead of lock: losers bail and let their Make() continue against the
-		// still-valid old state instead of parking for the rotator's snapshot build (which
-		// is hundreds of µs on a 10k-entry pool, dominated by ToFrozenDictionary's hash
-		// analysis). The claim is mutually exclusive — only one rotation runs at a time —
-		// and the defensive re-check below covers being preempted between the outer
-		// timestamp check and the claim itself.
 		if (Interlocked.CompareExchange(ref _rotationInProgress, 1, 0) != 0)
 			return;
 
@@ -131,11 +120,9 @@ public sealed class UniqueStringPool
 
 			var newHot = new Generation();
 			current.Hot.SealTo(newHot);
-			var newCold = new FrozenGeneration(
-				current.Hot.Map.ToFrozenDictionary(StringComparer.Ordinal));
+			var newCold = new FrozenGeneration(current.Hot.Map.ToFrozenDictionary(StringComparer.Ordinal));
 
-			Volatile.Write(ref _state,
-				new State(newHot, newCold, nowMs + _steadyIntervalMs));
+			Volatile.Write(ref _state, new State(newHot, newCold, nowMs + _steadyIntervalMs));
 		}
 		finally
 		{
@@ -175,38 +162,27 @@ public sealed class UniqueStringPool
 		internal void SealTo(Generation next)
 		{
 			Volatile.Write(ref _next, next);
-			// StoreLoad fence; pairs with the writer's fence after TryAdd (Dekker pattern).
-			// Guarantees that either the rotator's subsequent ToFrozenDictionary snapshot
-			// captures a racing writer's add, or the writer's _next re-read sees this seal
-			// and forwards into newHot. Replaces the need for a write-drain counter.
+			// Dekker fence pairing with the writer's after GetOrAdd. Without it the
+			// rotator's snapshot may miss a racing writer's add while the writer's
+			// _next re-read misses this seal — transient duplicate strings at next rotation.
 			Interlocked.MemoryBarrier();
 		}
 
-		internal string AddOrGet(ReadOnlySpan<char> key, string candidate)
+		internal string AddOrGet(string candidate)
 		{
-			var sealedTo = Volatile.Read(ref _next);
-			if (sealedTo != null)
-				return sealedTo.AddOrGet(key, candidate);
+			var target = this;
+			Generation? sealedTo;
+			while ((sealedTo = Volatile.Read(ref target._next)) != null)
+				target = sealedTo;
 
-			while (true)
-			{
-				if (_lookup.TryGetValue(key, out var existing))
-					return existing;
-				if (Map.TryAdd(candidate, candidate))
-				{
-					// StoreLoad fence completing the Dekker pair with SealTo. Without it,
-					// the _next re-read could be reordered ahead of TryAdd's publication
-					// of the new entry (store-load reordering across distinct addresses,
-					// permitted on both x86 TSO and ARM64) — yielding a stale null while
-					// the snapshot also misses the add, orphaning the value in an
-					// unreachable generation.
-					Interlocked.MemoryBarrier();
-					sealedTo = Volatile.Read(ref _next);
-					return sealedTo != null
-						? sealedTo.AddOrGet(key, candidate)
-						: candidate;
-				}
-			}
+			var stored = target.Map.GetOrAdd(candidate, candidate);
+			if (!ReferenceEquals(stored, candidate))
+				return stored;
+
+			// Dekker fence pairing with SealTo.
+			Interlocked.MemoryBarrier();
+			sealedTo = Volatile.Read(ref target._next);
+			return sealedTo != null ? sealedTo.AddOrGet(candidate) : candidate;
 		}
 	}
 
