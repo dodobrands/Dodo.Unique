@@ -19,8 +19,9 @@ public sealed class UniqueStringPool
 {
 	private readonly long _steadyIntervalMs;
 	private long _expiryMs;
-	private ConcurrentDictionary<string, string> _hot = new(StringComparer.Ordinal);
-	private FrozenDictionary<string, string> _cold = FrozenDictionary<string, string>.Empty;
+	private ConcurrentDictionary<string, string> _hot;
+	private AltLookupWrapper _hotAlt;
+	private FrozenDictionary<string, string> _cold;
 
 	/// <summary>
 	/// Creates a new pool.
@@ -43,6 +44,9 @@ public sealed class UniqueStringPool
 		MaxLength = maxLength;
 		_steadyIntervalMs = Math.Max(1, (long)minRetention.TotalMilliseconds);
 		_expiryMs = Environment.TickCount64 + _steadyIntervalMs;
+		_hot = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
+		_hotAlt = new AltLookupWrapper(_hot);
+		_cold = FrozenDictionary<string, string>.Empty;
 	}
 
 	/// <summary>
@@ -69,8 +73,7 @@ public sealed class UniqueStringPool
 		if (chars.Length > MaxLength)
 			return new string(chars);
 
-		var hot = Volatile.Read(ref _hot);
-		var hotAlt = hot.GetAlternateLookup<ReadOnlySpan<char>>();
+		var hotAlt = Volatile.Read(ref _hotAlt).Lookup;
 		if (hotAlt.TryGetValue(chars, out var hit))
 			return hit;
 
@@ -95,8 +98,8 @@ public sealed class UniqueStringPool
 		if (value.Length > MaxLength)
 			return value;
 
-		var hot = Volatile.Read(ref _hot);
-		if (hot.TryGetValue(value, out var hit))
+		var hotAlt = Volatile.Read(ref _hotAlt).Lookup;
+		if (hotAlt.TryGetValue(value, out var hit))
 			return hit;
 
 		var cold = Volatile.Read(ref _cold);
@@ -130,13 +133,21 @@ public sealed class UniqueStringPool
 			return;
 
 		var hot = Volatile.Read(ref _hot);
-		var newCold = hot.ToFrozenDictionary(StringComparer.Ordinal);
 
-		var seed = newCold.Count + (newCold.Count >> 2);
+		var count = hot.Count;
+		var seed = count + (count >> 2);
 		var newHot = new ConcurrentDictionary<string, string>(
 			concurrencyLevel: Environment.ProcessorCount, capacity: seed, comparer: StringComparer.Ordinal);
-
-		Volatile.Write(ref _cold, newCold);
 		Volatile.Write(ref _hot, newHot);
+		Volatile.Write(ref _hotAlt, new AltLookupWrapper(newHot));
+
+		var newCold = hot.ToFrozenDictionary(StringComparer.Ordinal);
+		Volatile.Write(ref _cold, newCold);
 	}
+
+	private sealed class AltLookupWrapper(ConcurrentDictionary<string, string> dict)
+	{
+		public ConcurrentDictionary<string, string>.AlternateLookup<ReadOnlySpan<char>> Lookup { get; } = dict.GetAlternateLookup<ReadOnlySpan<char>>();
+	}
+
 }
