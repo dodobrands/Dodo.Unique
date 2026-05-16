@@ -73,10 +73,17 @@ public sealed class UniqueStringPool
 		if (state.Hot.TryGet(chars, out var hit))
 			return hit;
 		if (state.Cold.TryGet(chars, out hit))
-			return state.Hot.AddOrGet(hit.AsSpan(), hit);
+			return state.Hot.AddOrGet(hit, hit);
 
 		MaybeRotate();
-		return Volatile.Read(ref _state).Hot.AddOrGet(chars, new string(chars));
+		// Re-check cold against the latest state: rotation may have folded another
+		// writer's commit from oldHot into newCold while we were between our initial
+		// cold check and here. Without this, we'd mint a second canonical instance
+		// into newHot for a value already present in newCold.
+		var latest = Volatile.Read(ref _state);
+		return latest.Cold.TryGet(chars, out hit)
+			? latest.Hot.AddOrGet(hit, hit)
+			: latest.Hot.AddOrGet(chars, new string(chars));
 	}
 
 	public string Make(string value)
@@ -91,10 +98,13 @@ public sealed class UniqueStringPool
 		if (state.Hot.TryGet(value, out var hit))
 			return hit;
 		if (state.Cold.TryGet(value, out hit))
-			return state.Hot.AddOrGet(hit.AsSpan(), hit);
+			return state.Hot.AddOrGet(hit, hit);
 
 		MaybeRotate();
-		return Volatile.Read(ref _state).Hot.AddOrGet(value.AsSpan(), value);
+		var latest = Volatile.Read(ref _state);
+		return latest.Cold.TryGet(value, out hit)
+			? latest.Hot.AddOrGet(hit, hit)
+			: latest.Hot.AddOrGet(value, value);
 	}
 
 	private void MaybeRotate()
