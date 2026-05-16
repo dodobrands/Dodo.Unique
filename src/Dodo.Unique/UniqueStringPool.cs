@@ -175,16 +175,10 @@ public sealed class UniqueStringPool
 		internal void SealTo(Generation next)
 		{
 			Volatile.Write(ref _next, next);
-			// Make the seal globally visible before the rotator starts snapshotting Map.
-			// Pairs with writers' post-TryAdd Volatile.Read(_next) to give SC on x86 TSO:
-			//   • If a writer's post-TryAdd seal re-check happens after this fence, it
-			//     sees the seal and forwards the value into the new generation.
-			//   • If it happens before this fence, then the writer's bucket-head store
-			//     (globally visible via ConcurrentDictionary's lock release) is also
-			//     before the subsequent ToFrozenDictionary enumeration, so the snapshot
-			//     captures the value.
-			// Either way, the entry stays reachable post-rotation — no drain counter
-			// required.
+			// StoreLoad fence; pairs with the writer's fence after TryAdd (Dekker pattern).
+			// Guarantees that either the snapshot below captures a racing writer's add,
+			// or the writer's _next re-read sees this seal and forwards into newHot.
+			// Replaces the need for a write-drain counter.
 			Interlocked.MemoryBarrier();
 		}
 
@@ -200,11 +194,11 @@ public sealed class UniqueStringPool
 					return existing;
 				if (Map.TryAdd(candidate, candidate))
 				{
-					// Re-check seal after committing: if rotation snuck in between the
-					// outer check and our TryAdd, the snapshot may have missed our entry.
-					// ConcurrentDictionary's lock release inside TryAdd acts as a full
-					// barrier, so this load is correctly ordered against our store. See
-					// SealTo for the correctness pairing.
+					// StoreLoad fence completing the Dekker pair with SealTo. Without it,
+					// the _next re-read can satisfy from the store buffer ahead of
+					// the bucket-head store — yielding a stale null while the snapshot also
+					// misses the add, orphaning the value in an unreachable generation.
+					Interlocked.MemoryBarrier();
 					sealedTo = Volatile.Read(ref _next);
 					return sealedTo != null
 						? sealedTo.AddOrGet(key, candidate)
