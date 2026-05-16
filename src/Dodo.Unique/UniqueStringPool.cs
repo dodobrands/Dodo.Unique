@@ -25,10 +25,10 @@ public sealed class UniqueStringPool
     /// Creates a new pool.
     /// </summary>
     /// <param name="minRetention">
-    /// Minimum time a canonical instance is guaranteed to be retained after its last access.
-    /// Idle entries are evicted between <paramref name="minRetention"/> and
-    /// <c>2 * minRetention</c> later via a two-tier hot/cold rotation. Worst-case live entry
-    /// count is bounded by the number of unique inserts during <c>2 * minRetention</c>.
+    /// Retention floor after last access. Idle entries evict at delay d where
+    /// <paramref name="minRetention"/> ≤ d &lt; 2·<paramref name="minRetention"/>,
+    /// via a two-tier hot/cold rotation. Live entries ≤ unique inserts during
+    /// 2·<paramref name="minRetention"/>.
     /// </param>
     /// <param name="maxLength">
     /// Values longer than this bypass canonicalization: <c>Make(string)</c> returns the input
