@@ -8,7 +8,7 @@ namespace Dodo.Unique;
 /// <see cref="UniqueStringPool"/>, so repeating field values share a canonical instance.
 /// Writes pass through unchanged.
 /// </summary>
-public sealed class UniqueStringConverter: JsonConverter<string?>
+public sealed class UniqueStringConverter : JsonConverter<string?>
 {
     // Hard ceiling for the stackalloc buffer (2 KB at sizeof(char)=2). Larger values
     // risk StackOverflowException on threads with small stacks.

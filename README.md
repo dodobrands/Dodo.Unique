@@ -103,6 +103,16 @@ This is the opposite of `MemoryCache` / Caffeine / Guava semantics, but right fo
 
 Worst-case live entry count is bounded by unique inserts during `2 * minRetention`. Bound per-entry cost with the `maxLength` parameter (default 256).
 
+## Why TTL, not `WeakReference<string>`?
+
+Go's `unique` package uses weak refs + GC. The same approach in .NET has three problems that this pool avoids:
+
+- **Reclaim is GC-coupled, not access-coupled.** `WeakReference<T>` clears only when a GC condemns the target's generation and no strong root remains. A string promoted to Gen 2 survives until the next full GC, regardless of when the cache last touched it. Timing also depends on the runtime's GC mode and configuration (workstation vs server, background vs blocking, `GCLatencyMode`, region/segment layout), so steady-state retention shifts across deployments and load patterns instead of tracking access.
+- **Per-entry cost is structural.** Each entry adds a managed `WeakReference` wrapper, a slot in the native GC handle table, and per-collection scan work inside the GC pause. The cost scales with pool size and isn't amortizable.
+- **Literal / interned / FOH strings are immortal.** Since .NET 8, string literals live on the Frozen Object Heap and are strongly rooted forever; `WeakReference` to them never clears. A WR-backed pool silently behaves differently for runtime-built vs literal strings.
+
+This pool trades GC-coupled eviction for a predictable two-tier rotation: a bounded dictionary footprint, no handle-table tax, and behavior that doesn't depend on generation aging or GC configuration.
+
 ## Build & test
 
 ```bash
