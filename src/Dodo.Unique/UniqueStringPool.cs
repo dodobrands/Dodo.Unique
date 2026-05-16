@@ -17,188 +17,187 @@ namespace Dodo.Unique;
 /// </summary>
 public sealed class UniqueStringPool
 {
-	private readonly long _steadyIntervalMs;
-	private int _rotationInProgress;
-	private State _state;
+    private readonly long _steadyIntervalMs;
+    private int _rotationInProgress;
+    private State _state;
 
-	/// <summary>
-	/// Creates a new pool.
-	/// </summary>
-	/// <param name="minRetention">
-	/// Minimum time a canonical instance is guaranteed to be retained after its last access.
-	/// Idle entries are evicted between <paramref name="minRetention"/> and
-	/// <c>2 * minRetention</c> later via a two-tier hot/cold rotation. Worst-case live entry
-	/// count is bounded by the number of unique inserts during <c>2 * minRetention</c>.
-	/// </param>
-	/// <param name="maxLength">
-	/// Values longer than this bypass canonicalization: <c>Make(string)</c> returns the input
-	/// unchanged, <c>Make(ReadOnlySpan&lt;char&gt;)</c> allocates a fresh <see cref="string"/>.
-	/// Caps per-entry memory cost.
-	/// </param>
-	public UniqueStringPool(TimeSpan minRetention, int maxLength = 256)
-	{
-		ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(minRetention, TimeSpan.Zero);
-		ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxLength);
-		MaxLength = maxLength;
-		_steadyIntervalMs = Math.Max(1, (long)minRetention.TotalMilliseconds);
-		_state = new State(new Generation(), FrozenGeneration.Empty, Environment.TickCount64 + _steadyIntervalMs);
-	}
+    /// <summary>
+    /// Creates a new pool.
+    /// </summary>
+    /// <param name="minRetention">
+    /// Minimum time a canonical instance is guaranteed to be retained after its last access.
+    /// Idle entries are evicted between <paramref name="minRetention"/> and
+    /// <c>2 * minRetention</c> later via a two-tier hot/cold rotation. Worst-case live entry
+    /// count is bounded by the number of unique inserts during <c>2 * minRetention</c>.
+    /// </param>
+    /// <param name="maxLength">
+    /// Values longer than this bypass canonicalization: <c>Make(string)</c> returns the input
+    /// unchanged, <c>Make(ReadOnlySpan&lt;char&gt;)</c> allocates a fresh <see cref="string"/>.
+    /// Caps per-entry memory cost.
+    /// </param>
+    public UniqueStringPool(TimeSpan minRetention, int maxLength = 256)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(minRetention, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxLength);
+        MaxLength = maxLength;
+        _steadyIntervalMs = Math.Max(1, (long)minRetention.TotalMilliseconds);
+        _state = new State(new Generation(), FrozenGeneration.Empty, Environment.TickCount64 + _steadyIntervalMs);
+    }
 
-	/// <summary>
-	/// Creates a new pool from an options object. Equivalent to the positional ctor — pick
-	/// this overload for readability or when more knobs are added.
-	/// </summary>
-	public UniqueStringPool(UniqueStringPoolOptions options)
-		: this((options ?? throw new ArgumentNullException(nameof(options))).MinRetention, options.MaxLength)
-	{
-	}
+    /// <summary>
+    /// Creates a new pool from an options object. Equivalent to the positional ctor — pick
+    /// this overload for readability or when more knobs are added.
+    /// </summary>
+    public UniqueStringPool(UniqueStringPoolOptions options)
+        : this((options ?? throw new ArgumentNullException(nameof(options))).MinRetention, options.MaxLength)
+    {
+    }
 
-	/// <summary>
-	/// The configured upper bound on cached string length. Exposed so callers (e.g.
-	/// <see cref="UniqueStringConverter"/>) can size their decode buffers consistently.
-	/// </summary>
-	public int MaxLength { get; }
+    /// <summary>
+    /// The configured upper bound on cached string length. Exposed so callers (e.g.
+    /// <see cref="UniqueStringConverter"/>) can size their decode buffers consistently.
+    /// </summary>
+    public int MaxLength { get; }
 
-	public string Make(ReadOnlySpan<char> chars)
-	{
-		if (chars.Length == 0)
-			return string.Empty;
-		if (chars.Length > MaxLength)
-			return new string(chars);
+    public string Make(ReadOnlySpan<char> chars)
+    {
+        if (chars.Length == 0)
+            return string.Empty;
+        if (chars.Length > MaxLength)
+            return new string(chars);
 
-		var state = Volatile.Read(ref _state);
-		if (state.Hot.TryGet(chars, out var hit))
-			return hit;
-		if (state.Cold.TryGet(chars, out hit))
-			return state.Hot.AddOrGet(hit);
+        var state = Volatile.Read(ref _state);
+        if (state.Hot.TryGet(chars, out var hit))
+            return hit;
+        if (state.Cold.TryGet(chars, out hit))
+            return state.Hot.AddOrGet(hit);
 
-		MaybeRotate();
+        MaybeRotate();
 
-		var latest = Volatile.Read(ref _state);
-		if (latest.Cold.TryGet(chars, out hit))
-			return latest.Hot.AddOrGet(hit);
-		var value = new string(chars);
-		return latest.Hot.AddOrGet(value);
-	}
+        var latest = Volatile.Read(ref _state);
+        if (latest.Cold.TryGet(chars, out hit))
+            return latest.Hot.AddOrGet(hit);
+        var value = new string(chars);
+        return latest.Hot.AddOrGet(value);
+    }
 
-	public string Make(string value)
-	{
-		ArgumentNullException.ThrowIfNull(value);
-		if (value.Length == 0)
-			return string.Empty;
-		if (value.Length > MaxLength)
-			return value;
+    public string Make(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        if (value.Length == 0)
+            return string.Empty;
+        if (value.Length > MaxLength)
+            return value;
 
-		var state = Volatile.Read(ref _state);
-		if (state.Hot.TryGet(value, out var hit))
-			return hit;
-		if (state.Cold.TryGet(value, out hit))
-			return state.Hot.AddOrGet(hit);
+        var state = Volatile.Read(ref _state);
+        if (state.Hot.TryGet(value, out var hit))
+            return hit;
+        if (state.Cold.TryGet(value, out hit))
+            return state.Hot.AddOrGet(hit);
 
-		MaybeRotate();
+        MaybeRotate();
 
-		var latest = Volatile.Read(ref _state);
-		return latest.Cold.TryGet(value, out hit)
-			? latest.Hot.AddOrGet(hit)
-			: latest.Hot.AddOrGet(value);
-	}
+        var latest = Volatile.Read(ref _state);
+        return latest.Cold.TryGet(value, out hit)
+            ? latest.Hot.AddOrGet(hit)
+            : latest.Hot.AddOrGet(value);
+    }
 
-	private void MaybeRotate()
-	{
-		var nowMs = Environment.TickCount64;
-		if (nowMs < Volatile.Read(ref _state).RotateAtMs)
-			return;
+    private void MaybeRotate()
+    {
+        var nowMs = Environment.TickCount64;
+        if (nowMs < Volatile.Read(ref _state).RotateAtMs)
+            return;
 
-		if (Interlocked.CompareExchange(ref _rotationInProgress, 1, 0) != 0)
-			return;
+        if (Interlocked.CompareExchange(ref _rotationInProgress, 1, 0) != 0)
+            return;
 
-		try
-		{
-			var current = Volatile.Read(ref _state);
-			if (nowMs < current.RotateAtMs)
-				return;
+        try
+        {
+            var current = Volatile.Read(ref _state);
+            if (nowMs < current.RotateAtMs)
+                return;
 
-			var newHot = new Generation();
-			current.Hot.SealTo(newHot);
-			var newCold = new FrozenGeneration(current.Hot.Map.ToFrozenDictionary(StringComparer.Ordinal));
+            var newHot = new Generation();
+            current.Hot.SealTo(newHot);
+            var newCold = new FrozenGeneration(current.Hot.Map.ToFrozenDictionary(StringComparer.Ordinal));
 
-			Volatile.Write(ref _state, new State(newHot, newCold, nowMs + _steadyIntervalMs));
-		}
-		finally
-		{
-			Volatile.Write(ref _rotationInProgress, 0);
-		}
-	}
+            Volatile.Write(ref _state, new State(newHot, newCold, nowMs + _steadyIntervalMs));
+        }
+        finally
+        {
+            Volatile.Write(ref _rotationInProgress, 0);
+        }
+    }
 
-	private sealed class State
-	{
-		internal readonly Generation Hot;
-		internal readonly FrozenGeneration Cold;
-		internal readonly long RotateAtMs;
+    private sealed class State
+    {
+        internal readonly Generation Hot;
+        internal readonly FrozenGeneration Cold;
+        internal readonly long RotateAtMs;
 
-		internal State(Generation hot, FrozenGeneration cold, long rotateAtMs)
-		{
-			Hot = hot;
-			Cold = cold;
-			RotateAtMs = rotateAtMs;
-		}
-	}
+        internal State(Generation hot, FrozenGeneration cold, long rotateAtMs)
+        {
+            Hot = hot;
+            Cold = cold;
+            RotateAtMs = rotateAtMs;
+        }
+    }
 
-	private sealed class Generation
-	{
-		internal readonly ConcurrentDictionary<string, string> Map;
-		private readonly ConcurrentDictionary<string, string>.AlternateLookup<ReadOnlySpan<char>> _lookup;
-		private Generation? _next;
+    private sealed class Generation
+    {
+        internal readonly ConcurrentDictionary<string, string> Map;
+        private readonly ConcurrentDictionary<string, string>.AlternateLookup<ReadOnlySpan<char>> _lookup;
+        private Generation? _next;
 
-		internal Generation()
-		{
-			Map = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
-			_lookup = Map.GetAlternateLookup<ReadOnlySpan<char>>();
-		}
+        internal Generation()
+        {
+            Map = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
+            _lookup = Map.GetAlternateLookup<ReadOnlySpan<char>>();
+        }
 
-		internal bool TryGet(ReadOnlySpan<char> key, out string value) =>
-			_lookup.TryGetValue(key, out value!);
+        internal bool TryGet(ReadOnlySpan<char> key, out string value) =>
+            _lookup.TryGetValue(key, out value!);
 
-		internal void SealTo(Generation next)
-		{
-			Volatile.Write(ref _next, next);
-			// Dekker fence pairing with the writer's after GetOrAdd. Without it the
-			// rotator's snapshot may miss a racing writer's add while the writer's
-			// _next re-read misses this seal — transient duplicate strings at next rotation.
-			Interlocked.MemoryBarrier();
-		}
+        internal void SealTo(Generation next)
+        {
+            Volatile.Write(ref _next, next);
+            // Dekker fence pairing with the writer's after GetOrAdd. Without it the
+            // rotator's snapshot may miss a racing writer's add while the writer's
+            // _next re-read misses this seal — transient duplicate strings at next rotation.
+            Interlocked.MemoryBarrier();
+        }
 
-		internal string AddOrGet(string candidate)
-		{
-			var target = this;
-			Generation? sealedTo;
-			while ((sealedTo = Volatile.Read(ref target._next)) != null)
-				target = sealedTo;
+        internal string AddOrGet(string candidate)
+        {
+            var target = this;
+            Generation? sealedTo;
+            while ((sealedTo = Volatile.Read(ref target._next)) != null)
+                target = sealedTo;
 
-			var stored = target.Map.GetOrAdd(candidate, candidate);
-			if (!ReferenceEquals(stored, candidate))
-				return stored;
+            var stored = target.Map.GetOrAdd(candidate, candidate);
+            if (!ReferenceEquals(stored, candidate))
+                return stored;
 
-			// Dekker fence pairing with SealTo.
-			Interlocked.MemoryBarrier();
-			sealedTo = Volatile.Read(ref target._next);
-			return sealedTo != null ? sealedTo.AddOrGet(candidate) : candidate;
-		}
-	}
+            // Dekker fence pairing with SealTo.
+            Interlocked.MemoryBarrier();
+            sealedTo = Volatile.Read(ref target._next);
+            return sealedTo != null ? sealedTo.AddOrGet(candidate) : candidate;
+        }
+    }
 
-	private sealed class FrozenGeneration
-	{
-		internal static readonly FrozenGeneration Empty =
-			new(FrozenDictionary<string, string>.Empty);
+    private sealed class FrozenGeneration
+    {
+        internal static readonly FrozenGeneration Empty = new(FrozenDictionary<string, string>.Empty);
 
-		private readonly FrozenDictionary<string, string>.AlternateLookup<ReadOnlySpan<char>> _lookup;
+        private readonly FrozenDictionary<string, string>.AlternateLookup<ReadOnlySpan<char>> _lookup;
 
-		internal FrozenGeneration(FrozenDictionary<string, string> map)
-		{
-			_lookup = map.GetAlternateLookup<ReadOnlySpan<char>>();
-		}
+        internal FrozenGeneration(FrozenDictionary<string, string> map)
+        {
+            _lookup = map.GetAlternateLookup<ReadOnlySpan<char>>();
+        }
 
-		internal bool TryGet(ReadOnlySpan<char> key, out string value) =>
-			_lookup.TryGetValue(key, out value!);
-	}
+        internal bool TryGet(ReadOnlySpan<char> key, out string value) =>
+            _lookup.TryGetValue(key, out value!);
+    }
 }
