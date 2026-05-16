@@ -118,11 +118,13 @@ public sealed class UniqueStringPool
             if (nowMs < current.RotateAtMs)
                 return;
 
-            var newHot = new Generation();
+            var currentCount = current.Hot.Map.Count;
+            var seed = currentCount + (currentCount >> 2); // x1.25
+            var newHot = new Generation(seed);
             current.Hot.SealTo(newHot);
             var newCold = new FrozenGeneration(current.Hot.Map.ToFrozenDictionary(StringComparer.Ordinal));
 
-            Volatile.Write(ref _state, new State(newHot, newCold, nowMs + _steadyIntervalMs));
+            Volatile.Write(ref _state, new State(hot: newHot, cold: newCold, rotateAtMs: nowMs + _steadyIntervalMs));
         }
         finally
         {
@@ -150,9 +152,12 @@ public sealed class UniqueStringPool
         private readonly ConcurrentDictionary<string, string>.AlternateLookup<ReadOnlySpan<char>> _lookup;
         private Generation? _next;
 
-        internal Generation()
+        internal Generation(int capacity = 0)
         {
-            Map = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
+            Map = new ConcurrentDictionary<string, string>(
+                concurrencyLevel: Environment.ProcessorCount,
+                capacity: capacity,
+                comparer: StringComparer.Ordinal);
             _lookup = Map.GetAlternateLookup<ReadOnlySpan<char>>();
         }
 
