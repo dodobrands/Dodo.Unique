@@ -176,9 +176,9 @@ public sealed class UniqueStringPool
 		{
 			Volatile.Write(ref _next, next);
 			// StoreLoad fence; pairs with the writer's fence after TryAdd (Dekker pattern).
-			// Guarantees that either the snapshot below captures a racing writer's add,
-			// or the writer's _next re-read sees this seal and forwards into newHot.
-			// Replaces the need for a write-drain counter.
+			// Guarantees that either the rotator's subsequent ToFrozenDictionary snapshot
+			// captures a racing writer's add, or the writer's _next re-read sees this seal
+			// and forwards into newHot. Replaces the need for a write-drain counter.
 			Interlocked.MemoryBarrier();
 		}
 
@@ -195,9 +195,11 @@ public sealed class UniqueStringPool
 				if (Map.TryAdd(candidate, candidate))
 				{
 					// StoreLoad fence completing the Dekker pair with SealTo. Without it,
-					// the _next re-read can satisfy from the store buffer ahead of
-					// the bucket-head store — yielding a stale null while the snapshot also
-					// misses the add, orphaning the value in an unreachable generation.
+					// the _next re-read could be reordered ahead of TryAdd's publication
+					// of the new entry (store-load reordering across distinct addresses,
+					// permitted on both x86 TSO and ARM64) — yielding a stale null while
+					// the snapshot also misses the add, orphaning the value in an
+					// unreachable generation.
 					Interlocked.MemoryBarrier();
 					sealedTo = Volatile.Read(ref _next);
 					return sealedTo != null
