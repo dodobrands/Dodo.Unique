@@ -81,9 +81,10 @@ public sealed class UniqueStringPool
 		// cold check and here. Without this, we'd mint a second canonical instance
 		// into newHot for a value already present in newCold.
 		var latest = Volatile.Read(ref _state);
-		return latest.Cold.TryGet(chars, out hit)
-			? latest.Hot.AddOrGet(hit, hit)
-			: latest.Hot.AddOrGet(chars, new string(chars));
+		if (latest.Cold.TryGet(chars, out hit))
+			return latest.Hot.AddOrGet(hit, hit);
+		var value = new string(chars);
+		return latest.Hot.AddOrGet(chars, value);
 	}
 
 	public string Make(string value)
@@ -130,12 +131,6 @@ public sealed class UniqueStringPool
 
 			var newHot = new Generation();
 			current.Hot.SealTo(newHot);
-			// Dekker's-style drain: by the time SealTo's barrier and the writers' own
-			// Interlocked fences synchronise, any writer that incremented _writers will
-			// be observed here; any writer that hadn't incremented yet observes the seal
-			// and forwards to newHot. Spinning until _writers == 0 means no writer is
-			// inside oldHot's TryAdd critical section — the snapshot below is sound.
-			current.Hot.WaitForWritersToDrain();
 			var newCold = new FrozenGeneration(
 				current.Hot.Map.ToFrozenDictionary(StringComparer.Ordinal));
 
@@ -167,7 +162,6 @@ public sealed class UniqueStringPool
 		internal readonly ConcurrentDictionary<string, string> Map;
 		private readonly ConcurrentDictionary<string, string>.AlternateLookup<ReadOnlySpan<char>> _lookup;
 		private Generation? _next;
-		private int _writers;
 
 		internal Generation()
 		{
@@ -181,54 +175,41 @@ public sealed class UniqueStringPool
 		internal void SealTo(Generation next)
 		{
 			Volatile.Write(ref _next, next);
-			// Pairs with the writer's Interlocked.Increment(_writers) on the other side
-			// to form a Dekker's-style synchronisation: after this fence, our read of
-			// _writers below sees any writer that already incremented, and that writer's
-			// read of _next sees our seal. Plain Volatile.Write/Read alone is not
-			// sequentially consistent under ECMA-335, so this fence is load-bearing.
-			//
-			// "Dekker's-style" here refers to the store-load fence pattern derived from
-			// Dekker's mutex (store own flag → full fence → load other's flag), not the
-			// full 3-variable mutex with a turn tie-breaker. We use the pattern only to
-			// mutually exclude "writer-in-TryAdd on oldHot" from "rotator-snapshotting
-			// oldHot"; writers do not contend with each other, so no turn is needed.
+			// Make the seal globally visible before the rotator starts snapshotting Map.
+			// Pairs with writers' post-TryAdd Volatile.Read(_next) to give SC on x86 TSO:
+			//   • If a writer's post-TryAdd seal re-check happens after this fence, it
+			//     sees the seal and forwards the value into the new generation.
+			//   • If it happens before this fence, then the writer's bucket-head store
+			//     (globally visible via ConcurrentDictionary's lock release) is also
+			//     before the subsequent ToFrozenDictionary enumeration, so the snapshot
+			//     captures the value.
+			// Either way, the entry stays reachable post-rotation — no drain counter
+			// required.
 			Interlocked.MemoryBarrier();
-		}
-
-		internal void WaitForWritersToDrain()
-		{
-			var spin = new SpinWait();
-			while (Volatile.Read(ref _writers) > 0)
-				spin.SpinOnce();
 		}
 
 		internal string AddOrGet(ReadOnlySpan<char> key, string candidate)
 		{
-			// Fast path: already sealed — forward without touching the counter.
 			var sealedTo = Volatile.Read(ref _next);
 			if (sealedTo != null)
 				return sealedTo.AddOrGet(key, candidate);
 
-			// Register as in-flight writer. Interlocked.Increment is a full fence;
-			// it pairs with the rotator's MemoryBarrier in SealTo (see comment there).
-			Interlocked.Increment(ref _writers);
-			try
+			while (true)
 			{
-				sealedTo = Volatile.Read(ref _next);
-				if (sealedTo != null)
-					return sealedTo.AddOrGet(key, candidate);
-
-				while (true)
+				if (_lookup.TryGetValue(key, out var existing))
+					return existing;
+				if (Map.TryAdd(candidate, candidate))
 				{
-					if (_lookup.TryGetValue(key, out var existing))
-						return existing;
-					if (Map.TryAdd(candidate, candidate))
-						return candidate;
+					// Re-check seal after committing: if rotation snuck in between the
+					// outer check and our TryAdd, the snapshot may have missed our entry.
+					// ConcurrentDictionary's lock release inside TryAdd acts as a full
+					// barrier, so this load is correctly ordered against our store. See
+					// SealTo for the correctness pairing.
+					sealedTo = Volatile.Read(ref _next);
+					return sealedTo != null
+						? sealedTo.AddOrGet(key, candidate)
+						: candidate;
 				}
-			}
-			finally
-			{
-				Interlocked.Decrement(ref _writers);
 			}
 		}
 	}
