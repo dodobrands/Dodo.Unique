@@ -120,7 +120,7 @@ public sealed class UniqueStringPool
 
             var currentCount = current.Hot.Map.Count;
             const int growthThreshold = 256;
-            var seed = currentCount + ((currentCount + 3 * growthThreshold) >> 2); // ~1.25
+            var seed = currentCount + ((currentCount + 3 * growthThreshold) >> 2); // from x2 to ~1.25 asymptotically
             var newHot = new Generation(seed);
             current.Hot.SealTo(newHot);
             var newCold = new FrozenGeneration(Freeze(current.Hot.Map, seed));
