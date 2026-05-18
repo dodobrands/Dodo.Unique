@@ -94,30 +94,9 @@ jobs:
           user: ${{ secrets.NUGET_USER }}
 
       - name: dotnet nuget push
-        id: nuget-push
         env:
           NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
         run: |
           dotnet nuget push "nupkgs/*.nupkg" \
             --source https://api.nuget.org/v3/index.json \
             --api-key "$NUGET_API_KEY"
-
-      - name: Diagnose failed push (full HTTP response)
-        if: failure() && steps.nuget-push.conclusion == 'failure'
-        env:
-          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
-        run: |
-          set -u
-          for nupkg in nupkgs/*.nupkg; do
-            echo "::group::PUT $nupkg"
-            status=$(curl -sS -X PUT "https://www.nuget.org/api/v2/package/" \
-              -H "X-NuGet-ApiKey: $NUGET_API_KEY" \
-              -F "package=@${nupkg};type=application/octet-stream" \
-              -o /tmp/nuget-response.txt \
-              -w "%{http_code}")
-            echo "HTTP $status"
-            echo "--- response body ---"
-            cat /tmp/nuget-response.txt || true
-            echo
-            echo "::endgroup::"
-          done
