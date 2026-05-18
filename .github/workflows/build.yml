@@ -93,6 +93,10 @@ jobs:
         with:
           user: ${{ secrets.NUGET_USER }}
 
+      # --verbosity detailed surfaces the full HTTP response body from NuGet.org on errors;
+      # the default verbosity collapses every non-2xx into a generic "Package already exists"
+      # message, which hid the real 409 reason on run 26027444990. --skip-duplicate is dropped
+      # so any 409 fails the run loudly instead of being silently swallowed.
       - name: dotnet nuget push
         env:
           NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
@@ -100,4 +104,4 @@ jobs:
           dotnet nuget push "nupkgs/*.nupkg" \
             --source https://api.nuget.org/v3/index.json \
             --api-key "$NUGET_API_KEY" \
-            --skip-duplicate
+            --verbosity detailed
