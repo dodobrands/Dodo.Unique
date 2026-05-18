@@ -2,6 +2,7 @@
 <Project>
     <ItemGroup>
         <PackageVersion Include="Newtonsoft.Json" Version="13.0.3" />
+        <PackageVersion Include="MinVer" Version="7.0.0" />
     </ItemGroup>
     <ItemGroup Label="Tests">
         <!--

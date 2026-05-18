@@ -24,7 +24,12 @@ jobs:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
     steps:
+      # fetch-depth: 0 lets MinVer see the latest version tag in history; with the
+      # default shallow clone (depth 1) MinVer falls back to 0.0.0-alpha.0.{height}
+      # and the asserted version on built artefacts no longer reflects the release tag.
       - uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-dotnet@v5.1.0
         with:
@@ -63,26 +68,16 @@ jobs:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
     steps:
+      # fetch-depth: 0 lets MinVer see the tag the publish run was triggered on.
       - uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-dotnet@v5.1.0
         with:
           dotnet-version: |
             9.0.x
             10.0.x
-
-      - name: Verify tag matches PackageVersion
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          EXPECTED="${TAG#v}"
-          for csproj in src/Dodo.Unique/Dodo.Unique.csproj src/Dodo.Unique.NewtonsoftJson/Dodo.Unique.NewtonsoftJson.csproj; do
-            ACTUAL=$(grep -oP '<PackageVersion>\K[^<]+' "$csproj")
-            if [ "$ACTUAL" != "$EXPECTED" ]; then
-              echo "::error file=$csproj::PackageVersion '$ACTUAL' does not match tag '$EXPECTED'"
-              exit 1
-            fi
-          done
 
       - name: dotnet pack
         run: |
