@@ -122,7 +122,7 @@ public sealed class UniqueStringPool
             var seed = currentCount + (currentCount >> 2); // x1.25
             var newHot = new Generation(seed);
             current.Hot.SealTo(newHot);
-            var newCold = new FrozenGeneration(current.Hot.Map.ToFrozenDictionary(StringComparer.Ordinal));
+            var newCold = new FrozenGeneration(Freeze(current.Hot.Map, seed));
 
             Volatile.Write(ref _state, new State(hot: newHot, cold: newCold, rotateAtMs: nowMs + _steadyIntervalMs));
         }
@@ -130,6 +130,14 @@ public sealed class UniqueStringPool
         {
             Volatile.Write(ref _rotationInProgress, 0);
         }
+    }
+
+    private static FrozenDictionary<string, string> Freeze(ConcurrentDictionary<string, string> source, int capacity)
+    {
+        var snapshot = new Dictionary<string, string>(capacity, StringComparer.Ordinal);
+        foreach (var kvp in source)
+            snapshot[kvp.Key] = kvp.Value;
+        return snapshot.ToFrozenDictionary(StringComparer.Ordinal);
     }
 
     private sealed class State
