@@ -21,6 +21,13 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        tfm:
+          - net9.0
+          - net10.0
+          - net11.0
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -43,9 +50,9 @@ jobs:
         run: dotnet build Dodo.Unique.slnx -c Release --no-restore
 
       - name: run Dodo.Unique tests (excluding rotation stress)
-        run: dotnet run --project tests/Dodo.Unique.Tests/Dodo.Unique.Tests.csproj -c Release --no-build -- --treenode-filter "/*/*/*/*[Category!=RotationStress]"
+        run: dotnet run --project tests/Dodo.Unique.Tests/Dodo.Unique.Tests.csproj -c Release --no-build -f ${{ matrix.tfm }} -- --treenode-filter "/*/*/*/*[Category!=RotationStress]"
       - name: run Dodo.Unique.NewtonsoftJson tests
-        run: dotnet run --project tests/Dodo.Unique.NewtonsoftJson.Tests/Dodo.Unique.NewtonsoftJson.Tests.csproj -c Release --no-build
+        run: dotnet run --project tests/Dodo.Unique.NewtonsoftJson.Tests/Dodo.Unique.NewtonsoftJson.Tests.csproj -c Release --no-build -f ${{ matrix.tfm }}
 
   rotation-stress:
     strategy:
@@ -54,6 +61,10 @@ jobs:
         runner:
           - ubuntu-latest
           - ubuntu-24.04-arm
+        tfm:
+          - net9.0
+          - net10.0
+          - net11.0
     runs-on: ${{ matrix.runner }}
     continue-on-error: true
     timeout-minutes: 15
@@ -76,7 +87,7 @@ jobs:
         run: dotnet build tests/Dodo.Unique.Tests/Dodo.Unique.Tests.csproj -c Release
 
       - name: run rotation contention stress tests
-        run: dotnet run --project tests/Dodo.Unique.Tests/Dodo.Unique.Tests.csproj -c Release --no-build -- --treenode-filter "/*/*/*/*[Category=RotationStress]"
+        run: dotnet run --project tests/Dodo.Unique.Tests/Dodo.Unique.Tests.csproj -c Release --no-build -f ${{ matrix.tfm }} -- --treenode-filter "/*/*/*/*[Category=RotationStress]"
 
   publish:
     needs: build
