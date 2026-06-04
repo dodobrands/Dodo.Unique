@@ -48,7 +48,6 @@ jobs:
         run: dotnet run --project tests/Dodo.Unique.NewtonsoftJson.Tests/Dodo.Unique.NewtonsoftJson.Tests.csproj -c Release --no-build
 
   rotation-stress:
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
     strategy:
       fail-fast: false
       matrix:
