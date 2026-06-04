@@ -1,6 +1,7 @@
 name: build
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -20,13 +21,17 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        tfm:
+          - net9.0
+          - net10.0
+          - net11.0
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
     steps:
-      # fetch-depth: 0 lets MinVer see the latest version tag in history; with the
-      # default shallow clone (depth 1) MinVer falls back to 0.0.0-alpha.0.{height}
-      # and the asserted version on built artefacts no longer reflects the release tag.
       - uses: actions/checkout@v6.0.2
         with:
           fetch-depth: 0
@@ -36,6 +41,7 @@ jobs:
           dotnet-version: |
             9.0.x
             10.0.x
+            11.0.x
 
       - name: dotnet restore
         run: dotnet restore Dodo.Unique.slnx
@@ -43,23 +49,51 @@ jobs:
       - name: dotnet build
         run: dotnet build Dodo.Unique.slnx -c Release --no-restore
 
-      # `dotnet test` on .NET 10 SDK no longer supports the VSTest target. TUnit is a
-      # Microsoft.Testing.Platform application, so each test project is a self-hosting exe — run
-      # them directly. Both projects target net10.0; setup-dotnet provides the matching runtime.
-      - name: run Dodo.Unique tests
-        run: dotnet run --project tests/Dodo.Unique.Tests/Dodo.Unique.Tests.csproj -c Release --no-build
+      - name: run Dodo.Unique tests (excluding rotation stress)
+        run: dotnet run --project tests/Dodo.Unique.Tests/Dodo.Unique.Tests.csproj -c Release --no-build -f ${{ matrix.tfm }} -- --treenode-filter "/*/*/*/*[Category!=RotationStress]"
       - name: run Dodo.Unique.NewtonsoftJson tests
-        run: dotnet run --project tests/Dodo.Unique.NewtonsoftJson.Tests/Dodo.Unique.NewtonsoftJson.Tests.csproj -c Release --no-build
+        run: dotnet run --project tests/Dodo.Unique.NewtonsoftJson.Tests/Dodo.Unique.NewtonsoftJson.Tests.csproj -c Release --no-build -f ${{ matrix.tfm }}
+
+  rotation-stress:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner:
+          - ubuntu-latest
+          - ubuntu-24.04-arm
+        tfm:
+          - net9.0
+          - net10.0
+          - net11.0
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: true
+    timeout-minutes: 15
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+    steps:
+      - uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-dotnet@v5.1.0
+        with:
+          dotnet-version: |
+            9.0.x
+            10.0.x
+            11.0.x
+
+      - name: dotnet build
+        run: dotnet build tests/Dodo.Unique.Tests/Dodo.Unique.Tests.csproj -c Release
+
+      - name: run rotation contention stress tests
+        run: dotnet run --project tests/Dodo.Unique.Tests/Dodo.Unique.Tests.csproj -c Release --no-build -f ${{ matrix.tfm }} -- --treenode-filter "/*/*/*/*[Category=RotationStress]"
 
   publish:
     needs: build
-    # Tag-only publish: `git tag v1.2.3 && git push --tags` is the release trigger.
-    # PackageVersion in each .csproj must match the tag (verified below).
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # id-token: write enables OIDC — GitHub mints a token whose claims (repo, workflow,
-    # ref, environment) NuGet.org matches against the Trusted Publisher policy.
     permissions:
       id-token: write
       contents: read
@@ -68,7 +102,6 @@ jobs:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
     steps:
-      # fetch-depth: 0 lets MinVer see the tag the publish run was triggered on.
       - uses: actions/checkout@v6.0.2
         with:
           fetch-depth: 0
@@ -78,15 +111,13 @@ jobs:
           dotnet-version: |
             9.0.x
             10.0.x
+            11.0.x
 
       - name: dotnet pack
         run: |
           dotnet pack src/Dodo.Unique/Dodo.Unique.csproj -c Release -p:IsPackable=true --output nupkgs
           dotnet pack src/Dodo.Unique.NewtonsoftJson/Dodo.Unique.NewtonsoftJson.csproj -c Release -p:IsPackable=true --output nupkgs
 
-      # Exchanges the GitHub OIDC token for a short-lived NuGet.org API key.
-      # Requires a Trusted Publisher policy registered on the NuGet.org account
-      # (see PR body for the one-time setup steps).
       - name: NuGet trusted-publisher login
         id: nuget-login
         uses: NuGet/login@v1
