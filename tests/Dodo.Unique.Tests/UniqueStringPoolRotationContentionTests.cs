@@ -4,13 +4,14 @@ using System.Diagnostics;
 namespace Dodo.Unique.Tests;
 
 /// <summary>
-/// Stress tests for the hot/cold rotation race. Many cores hammer a small fixed "checked" set --
-/// asserting one stable canonical reference per value -- while a continuous stream of fresh
-/// "driver" misses forces <c>MaybeRotate()</c> to fire repeatedly. Together they target the Dekker
-/// fence pair (<c>SealTo</c> / <c>AddOrGet</c> in <see cref="UniqueStringPool"/>): a write landing
-/// in the old hot generation as it is sealed and snapshotted must be neither lost (dropped from
-/// both new hot and new cold, then re-added as a fresh instance) nor duplicated (two live canonical
-/// instances for one value).
+/// Oversubscribed stress tests for the hot/cold rotation race. Workers (2x the cores) hammer a
+/// small fixed "checked" set -- asserting one stable canonical reference per value -- while a
+/// continuous stream of fresh "driver" misses forces <c>MaybeRotate()</c> to fire repeatedly. The
+/// continuous inserts racing each <c>SealTo</c> are the teeth: they target the Dekker fence pair
+/// (<c>SealTo</c> / <c>AddOrGet</c> in <see cref="UniqueStringPool"/>), so a write landing in the
+/// old hot generation as it is sealed and snapshotted must be neither lost (dropped from both new
+/// hot and new cold, then re-added as a fresh instance) nor duplicated (two live canonical
+/// instances for one value). Removing either barrier makes these tests fail.
 ///
 /// <para>
 /// A fresh-miss stream is mandatory: <c>Make</c> returns on a hot/cold hit before reaching
@@ -18,19 +19,29 @@ namespace Dodo.Unique.Tests;
 /// unique and excluded from the checked set.
 /// </para>
 /// <para>
-/// A reference mismatch on the checked set is a real bug, not legitimate eviction. Two guards keep
-/// that true under contention: (1) workers traverse the checked set from a per-pass rotating offset,
-/// so cores never march in phase and uniformly leave the same value untouched across a rotation; and
-/// (2) retention sits far above a full-pass time, so every checked value is re-promoted many times
-/// per interval and is in hot at every seal, never reaching the two-rotation eviction threshold.
-/// (An in-phase, 1 ms-retention version false-positived ~10% of runs by evicting low-index values
-/// mid-pass; both guards close that window.)
+/// <b>Why <c>[Category("RotationStress")]</c> + a dedicated runner.</b> The teeth need
+/// oversubscription and frequent rotations; with too few (or heavily contended) cores a checked
+/// value can be starved of access for two rotations and <i>legitimately evicted</i>, which the
+/// reference-stability assertion mis-reads as loss/duplication -- a false positive unrelated to the
+/// fences (verified: with the barriers removed the 2-core failure rate was identical). On a
+/// dedicated many-core machine that starvation does not occur (verified green over many runs on a
+/// native 10-core box, where barrier removal is still caught). So these tests are category-gated:
+/// excluded from the default build and local run, and executed only by CI jobs pinned to runners
+/// with enough cores. The race is a StoreLoad reordering, exposed far more on weak-memory (ARM)
+/// hardware than on x86 (TSO) -- the ARM job is the real regression catcher.
 /// </para>
 /// </summary>
+[Category("RotationStress")]
 public sealed class UniqueStringPoolRotationContentionTests
 {
     private const int CheckedSetSize = 64;
     private static readonly TimeSpan StormDuration = TimeSpan.FromSeconds(1);
+    // Retention floor stays small so rotations are frequent (hundreds per storm) -- rotation count
+    // is the teeth lever; raising it only thins the seal events the race needs.
+    private static readonly TimeSpan Retention = TimeSpan.FromMilliseconds(5);
+    // 2x the cores: oversubscription is what keeps inserts in flight at each seal (the teeth).
+    // Requires a runner sized for it -- see the class remarks on the category gate.
+    private static readonly int WorkerCount = Math.Max(8, Environment.ProcessorCount * 2);
 
     [Test]
     [NotInParallel]
@@ -56,11 +67,7 @@ public sealed class UniqueStringPoolRotationContentionTests
 
     private static StormResult RunRotationStorm()
     {
-        // 5 ms retention keeps rotations frequent (hundreds per storm -- ample seal events to race)
-        // while staying far above a microsecond-scale full-pass time, so the checked set cannot be
-        // evicted between rotations. Lower (e.g. 1 ms) lets a contended pass approach the interval
-        // and reopens the eviction window that makes the test false-positive on correct code.
-        var pool = new UniqueStringPool(TimeSpan.FromMilliseconds(5));
+        var pool = new UniqueStringPool(Retention);
 
         var checkedValues = new string[CheckedSetSize];
         for (var i = 0; i < CheckedSetSize; i++)
@@ -82,10 +89,9 @@ public sealed class UniqueStringPoolRotationContentionTests
         var duplications = new ConcurrentQueue<string>();
         var errors = new ConcurrentQueue<Exception>();
 
-        var workerCount = Math.Max(8, Environment.ProcessorCount * 2);
-        using var startGate = new Barrier(workerCount);
-        var threads = new Thread[workerCount];
-        for (var t = 0; t < workerCount; t++)
+        using var startGate = new Barrier(WorkerCount);
+        var threads = new Thread[WorkerCount];
+        for (var t = 0; t < WorkerCount; t++)
         {
             var workerId = t;
             threads[t] =
@@ -139,10 +145,8 @@ public sealed class UniqueStringPoolRotationContentionTests
             var n = 0L;
             while (sw.Elapsed < StormDuration)
             {
-                // Hits keep every checked value hot AND verify a single canonical reference. The
-                // start offset rotates per pass and per worker so cores never traverse the set in
-                // phase -- otherwise a rotation firing mid-pass could leave the same early values
-                // untouched across a full cycle and evict them (a false positive, not a race).
+                // Hits keep every checked value hot AND verify a single canonical reference; the
+                // per-pass, per-worker start offset spreads the cores across the set.
                 var start = (int)((workerId + n) % CheckedSetSize);
                 for (var j = 0; j < CheckedSetSize; j++)
                 {
@@ -152,7 +156,8 @@ public sealed class UniqueStringPoolRotationContentionTests
                         duplications.Enqueue(value);
                 }
 
-                // One fresh miss reaches MaybeRotate() and drives a rotation once the gate elapses.
+                // One fresh miss per pass: a continuous stream of inserts into the just-emptied hot
+                // generation is what races SealTo -- these are the teeth.
                 _ = pool.Make($"d-{workerId}-{n++}".AsSpan());
             }
         }
