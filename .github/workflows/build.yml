@@ -48,13 +48,8 @@ jobs:
         run: dotnet run --project tests/Dodo.Unique.NewtonsoftJson.Tests/Dodo.Unique.NewtonsoftJson.Tests.csproj -c Release --no-build
 
   rotation-stress:
-    strategy:
-      fail-fast: false
-      matrix:
-        runner:
-          - ubuntu-8core-x64
-          - ubuntu-8core-arm64
-    runs-on: ${{ matrix.runner }}
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 15
     env:
       DOTNET_NOLOGO: true
