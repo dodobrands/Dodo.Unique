@@ -1,8 +1,5 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using TUnit.Core;
-using TUnit.Assertions;
-using TUnit.Assertions.Extensions;
 
 namespace Dodo.Unique.Tests;
 
