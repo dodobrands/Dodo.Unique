@@ -11,4 +11,7 @@
     <ItemGroup>
         <PackageReference Include="MinVer" PrivateAssets="all" />
     </ItemGroup>
+    <ItemGroup>
+        <InternalsVisibleTo Include="Dodo.Unique.Tests" />
+    </ItemGroup>
 </Project>
