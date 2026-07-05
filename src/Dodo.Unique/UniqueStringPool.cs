@@ -158,20 +158,23 @@ public sealed class UniqueStringPool
 
             var currentCount = current.Hot.Map.Count;
             var seed = currentCount + (currentCount >> 2); // x1.25
-            var rotateAtMs = nowMs + _steadyIntervalMs;
             var newHot = current.Hot.SealTo(new Generation(seed));
 
             if (_useFrozenGeneration)
             {
                 ThreadPool.UnsafeQueueUserWorkItem(
-                    static s => s.pool.CompleteFrozenRotation(s.sealedHot, s.newHot, s.seed, s.rotateAtMs),
-                    (pool: this, sealedHot: current.Hot, newHot, seed, rotateAtMs),
+                    static s => s.pool.CompleteFrozenRotation(s.sealedHot, s.newHot, s.seed),
+                    (pool: this, sealedHot: current.Hot, newHot, seed),
                     preferLocal: false);
                 handedOff = true;
             }
             else
             {
-                Volatile.Write(ref _state, new State(newHot, current.Hot, rotateAtMs));
+                // Deadline anchors to publish time, not entry time: a stall between the
+                // two (GC on the generation alloc, preemption under oversubscription)
+                // would publish an already-expired deadline, and the µs-long generation
+                // the next miss then rotates in evicts everything it never saw.
+                Volatile.Write(ref _state, new State(newHot, current.Hot, Environment.TickCount64 + _steadyIntervalMs));
             }
         }
         finally
@@ -181,12 +184,14 @@ public sealed class UniqueStringPool
         }
     }
 
-    private void CompleteFrozenRotation(Generation sealedHot, Generation newHot, int seed, long rotateAtMs)
+    private void CompleteFrozenRotation(Generation sealedHot, Generation newHot, int seed)
     {
         try
         {
             var newCold = new FrozenGeneration(Freeze(sealedHot.Map, seed));
-            Volatile.Write(ref _state, new State(newHot, newCold, rotateAtMs));
+            // Publish-time deadline for the same reason as the sealed path — here the
+            // freeze itself is the stall.
+            Volatile.Write(ref _state, new State(newHot, newCold, Environment.TickCount64 + _steadyIntervalMs));
         }
         finally
         {
