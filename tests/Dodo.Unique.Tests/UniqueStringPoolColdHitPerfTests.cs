@@ -37,6 +37,9 @@ public sealed class UniqueStringPoolColdHitPerfTests
             Thread.Sleep(Retention + TimeSpan.FromMilliseconds(50));
             _ = pool.Make($"rotate-{t}".AsSpan());
             WaitForRotationIdle(pool);
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
 
             var sw = Stopwatch.StartNew();
             foreach (var key in keys)

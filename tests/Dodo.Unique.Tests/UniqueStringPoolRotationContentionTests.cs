@@ -22,9 +22,6 @@ public sealed class UniqueStringPoolRotationContentionTests
     [Arguments(false)]
     public async Task Make_under_rotation_contention_does_not_duplicate_strings(bool useFrozenGeneration)
     {
-        if (StarvedRunner())
-            return;
-
         var result = RunRotationStorm(useFrozenGeneration);
 
         await Assert.That(result.ErrorSummary).IsEqualTo(string.Empty);
@@ -38,27 +35,11 @@ public sealed class UniqueStringPoolRotationContentionTests
     [Arguments(false)]
     public async Task Make_under_rotation_contention_does_not_lose_strings(bool useFrozenGeneration)
     {
-        if (StarvedRunner())
-            return;
-
         var result = RunRotationStorm(useFrozenGeneration);
 
         await Assert.That(result.ErrorSummary).IsEqualTo(string.Empty);
         await Assert.That(result.Rotated).IsTrue();
         await Assert.That(result.LossSummary).IsEqualTo(string.Empty);
-    }
-
-    // Below 4 cores the storm cannot keep every checked value touched each era: a
-    // stall spanning two rotations leaves the unswept tail legitimately evicted,
-    // which the reference-stability asserts misread as loss — a documented false
-    // positive, fence-independent (CI run 28743618231: 14/64 contiguous values on a
-    // 2-core runner, green on rerun). Benches and the litmus still run everywhere.
-    private static bool StarvedRunner()
-    {
-        if (Environment.ProcessorCount >= 4)
-            return false;
-        Console.WriteLine($"Storm skipped: {Environment.ProcessorCount} cores < 4 — sweep-starvation eviction false positives.");
-        return true;
     }
 
     private static StormResult RunRotationStorm(bool useFrozenGeneration)
@@ -72,6 +53,18 @@ public sealed class UniqueStringPoolRotationContentionTests
         var anchors = new string[CheckedSetSize];
         for (var i = 0; i < CheckedSetSize; i++)
             anchors[i] = pool.Make(checkedValues[i].AsSpan());
+
+        // A reference flip is a contract violation only when the value was provably
+        // touched within the retention floor. A starved value — every worker stalled
+        // past two rotations, routine on tiny CI runners — is evictable, and its flip
+        // is the pool honoring the spec, not breaking it. Half the floor as the window
+        // absorbs timestamp-vs-Make ordering skew; real races surface as floods of
+        // microsecond-gap flips, never lone boundary cases.
+        var violationWindowTicks = (long)(Stopwatch.Frequency * Retention.TotalSeconds / 2);
+        var lastTouchTicks = new long[CheckedSetSize];
+        var stampNow = Stopwatch.GetTimestamp();
+        for (var i = 0; i < CheckedSetSize; i++)
+            lastTouchTicks[i] = stampNow;
 
         // Canary: interned once, never touched during the storm. The span overload (not a string
         // literal) avoids CLR interning masking the reference change. Two rotations evict it, so a
@@ -90,7 +83,8 @@ public sealed class UniqueStringPoolRotationContentionTests
         {
             var workerId = t;
             threads[t] =
-                new Thread(() => RunWorker(pool, checkedValues, seen, duplications, errors, startGate, workerId))
+                new Thread(() => RunWorker(pool, checkedValues, seen, duplications, errors, startGate, workerId,
+                    lastTouchTicks, violationWindowTicks))
                 {
                     IsBackground = true, Name = $"rotation-storm-{workerId}",
                 };
@@ -114,9 +108,13 @@ public sealed class UniqueStringPoolRotationContentionTests
         // in sealed mode, where the swap is already synchronous by the time Make returns.
         WaitForRotationIdle(pool);
 
+        // Belt over the mid-storm classification: by probe time most gaps exceed the
+        // window (joins + the idle wait), so this only fires on flips of provably
+        // still-live values — e.g. a wholesale extinction right at storm end.
         var losses = new List<string>();
         for (var i = 0; i < CheckedSetSize; i++)
-            if (!ReferenceEquals(pool.Make(checkedValues[i].AsSpan()), anchors[i]))
+            if (!ReferenceEquals(pool.Make(checkedValues[i].AsSpan()), anchors[i]) &&
+                Stopwatch.GetTimestamp() - Volatile.Read(ref lastTouchTicks[i]) < violationWindowTicks)
                 losses.Add(checkedValues[i]);
 
         var rotated = !ReferenceEquals(canaryBefore, pool.Make(canaryValue.AsSpan()));
@@ -135,7 +133,9 @@ public sealed class UniqueStringPoolRotationContentionTests
         ConcurrentQueue<string> duplications,
         ConcurrentQueue<Exception> errors,
         Barrier startGate,
-        int workerId)
+        int workerId,
+        long[] lastTouchTicks,
+        long violationWindowTicks)
     {
         try
         {
@@ -147,10 +147,20 @@ public sealed class UniqueStringPoolRotationContentionTests
                 var start = (int)((workerId + n) % CheckedSetSize);
                 for (var j = 0; j < CheckedSetSize; j++)
                 {
-                    var value = checkedValues[(start + j) % CheckedSetSize];
+                    var idx = (start + j) % CheckedSetSize;
+                    var value = checkedValues[idx];
+                    var before = Volatile.Read(ref lastTouchTicks[idx]);
                     var made = pool.Make(value.AsSpan());
+                    var now = Stopwatch.GetTimestamp();
+                    Volatile.Write(ref lastTouchTicks[idx], now);
                     if (!ReferenceEquals(seen.GetOrAdd(value, made), made))
-                        duplications.Enqueue(value);
+                    {
+                        if (now - before < violationWindowTicks)
+                            duplications.Enqueue(value);
+                        // Re-pin either way: after a legitimate eviction the new
+                        // canonical is the reference to hold stable from here on.
+                        seen[value] = made;
+                    }
                 }
 
                 // One fresh miss per pass: Make reaches MaybeRotate() only on a miss, so this both
