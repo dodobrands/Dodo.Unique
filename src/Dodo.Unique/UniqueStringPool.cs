@@ -94,8 +94,18 @@ public sealed class UniqueStringPool
         MaybeRotate();
 
         var latest = Volatile.Read(ref _state);
-        if (!ReferenceEquals(latest, state) && latest.Cold.TryGet(chars, out hit))
+        if (!ReferenceEquals(latest, state))
+        {
+            if (latest.Cold.TryGet(chars, out hit))
+                return latest.Hot.AddOrGet(hit);
+        }
+        // Unchanged state does not mean no rotation: an in-flight seal may already
+        // be routing inserts past this thread's view of the hot tier. The sealed
+        // map stays live and fresher than any snapshot — re-probe it rather than
+        // mint a second instance for a value a racing writer just added.
+        else if (!RotationIdle && latest.Hot.TryGet(chars, out hit))
             return latest.Hot.AddOrGet(hit);
+
         var value = new string(chars);
         return latest.Hot.AddOrGet(value);
     }
@@ -117,8 +127,15 @@ public sealed class UniqueStringPool
         MaybeRotate();
 
         var latest = Volatile.Read(ref _state);
-        if (!ReferenceEquals(latest, state) && latest.Cold.TryGet(value, out hit))
+        if (!ReferenceEquals(latest, state))
+        {
+            if (latest.Cold.TryGet(value, out hit))
+                return latest.Hot.AddOrGet(hit);
+        }
+        // See Make(ReadOnlySpan<char>) — sealed-map re-probe during in-flight rotation.
+        else if (!RotationIdle && latest.Hot.TryGet(value, out hit))
             return latest.Hot.AddOrGet(hit);
+
         return latest.Hot.AddOrGet(value);
     }
 
