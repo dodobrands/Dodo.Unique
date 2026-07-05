@@ -18,9 +18,11 @@ public sealed class UniqueStringPoolRotationContentionTests
 
     [Test]
     [NotInParallel]
-    public async Task Make_under_rotation_contention_does_not_duplicate_strings()
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Make_under_rotation_contention_does_not_duplicate_strings(bool useFrozenGeneration)
     {
-        var result = RunRotationStorm();
+        var result = RunRotationStorm(useFrozenGeneration);
 
         await Assert.That(result.ErrorSummary).IsEqualTo(string.Empty);
         await Assert.That(result.Rotated).IsTrue();
@@ -29,18 +31,20 @@ public sealed class UniqueStringPoolRotationContentionTests
 
     [Test]
     [NotInParallel]
-    public async Task Make_under_rotation_contention_does_not_lose_strings()
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Make_under_rotation_contention_does_not_lose_strings(bool useFrozenGeneration)
     {
-        var result = RunRotationStorm();
+        var result = RunRotationStorm(useFrozenGeneration);
 
         await Assert.That(result.ErrorSummary).IsEqualTo(string.Empty);
         await Assert.That(result.Rotated).IsTrue();
         await Assert.That(result.LossSummary).IsEqualTo(string.Empty);
     }
 
-    private static StormResult RunRotationStorm()
+    private static StormResult RunRotationStorm(bool useFrozenGeneration)
     {
-        var pool = new UniqueStringPool(Retention);
+        var pool = new UniqueStringPool(Retention, maxLength: 256, useFrozenGeneration: useFrozenGeneration);
 
         var checkedValues = new string[CheckedSetSize];
         for (var i = 0; i < CheckedSetSize; i++)
@@ -84,6 +88,12 @@ public sealed class UniqueStringPoolRotationContentionTests
                 stuck++;
         if (stuck > 0)
             errors.Enqueue(new TimeoutException($"{stuck} worker(s) did not terminate within {joinDeadline}."));
+
+        // Frozen mode completes the last rotation's freeze+swap on the thread pool: joins
+        // returning only means workers stopped calling Make, not that state has caught up.
+        // Reading losses/canary against a stale generation would false-positive a loss. No-op
+        // in sealed mode, where the swap is already synchronous by the time Make returns.
+        WaitForRotationIdle(pool);
 
         var losses = new List<string>();
         for (var i = 0; i < CheckedSetSize; i++)
@@ -134,6 +144,17 @@ public sealed class UniqueStringPoolRotationContentionTests
 #pragma warning restore CA1031
         {
             errors.Enqueue(ex);
+        }
+    }
+
+    private static void WaitForRotationIdle(UniqueStringPool pool)
+    {
+        var deadlineMs = Environment.TickCount64 + 5000;
+        while (!pool.RotationIdle)
+        {
+            if (Environment.TickCount64 > deadlineMs)
+                throw new TimeoutException("Rotation did not complete within 5s.");
+            Thread.Sleep(1);
         }
     }
 
