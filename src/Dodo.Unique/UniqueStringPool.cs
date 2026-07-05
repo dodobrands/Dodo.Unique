@@ -58,7 +58,7 @@ public sealed class UniqueStringPool
         MaxLength = maxLength;
         _useFrozenGeneration = useFrozenGeneration;
         _steadyIntervalMs = Math.Max(1, (long)minRetention.TotalMilliseconds);
-        _state = new State(new Generation(), FrozenGeneration.Empty, Environment.TickCount64 + _steadyIntervalMs);
+        _state = new State(new Generation(), FrozenGeneration.Empty, NextRotateAt());
     }
 
     /// <summary>
@@ -66,7 +66,8 @@ public sealed class UniqueStringPool
     /// this overload for readability or when more knobs are added.
     /// </summary>
     public UniqueStringPool(UniqueStringPoolOptions options)
-        : this((options ?? throw new ArgumentNullException(nameof(options))).MinRetention, options.MaxLength, options.UseFrozenGeneration)
+        : this((options ?? throw new ArgumentNullException(nameof(options))).MinRetention, options.MaxLength,
+            options.UseFrozenGeneration)
     {
     }
 
@@ -174,7 +175,7 @@ public sealed class UniqueStringPool
                 // two (GC on the generation alloc, preemption under oversubscription)
                 // would publish an already-expired deadline, and the µs-long generation
                 // the next miss then rotates in evicts everything it never saw.
-                Volatile.Write(ref _state, new State(newHot, current.Hot, Environment.TickCount64 + _steadyIntervalMs));
+                Volatile.Write(ref _state, new State(newHot, current.Hot, NextRotateAt()));
             }
         }
         finally
@@ -191,13 +192,15 @@ public sealed class UniqueStringPool
             var newCold = new FrozenGeneration(Freeze(sealedHot.Map, seed));
             // Publish-time deadline for the same reason as the sealed path — here the
             // freeze itself is the stall.
-            Volatile.Write(ref _state, new State(newHot, newCold, Environment.TickCount64 + _steadyIntervalMs));
+            Volatile.Write(ref _state, new State(newHot, newCold, NextRotateAt()));
         }
         finally
         {
             Volatile.Write(ref _rotationInProgress, 0);
         }
     }
+
+    private long NextRotateAt() => Environment.TickCount64 + _steadyIntervalMs;
 
     private static FrozenDictionary<string, string> Freeze(ConcurrentDictionary<string, string> source, int capacity)
     {
@@ -226,7 +229,7 @@ public sealed class UniqueStringPool
         }
     }
 
-    private sealed class Generation : IColdGeneration
+    private sealed class Generation: IColdGeneration
     {
         internal readonly ConcurrentDictionary<string, string> Map;
         private readonly ConcurrentDictionary<string, string>.AlternateLookup<ReadOnlySpan<char>> _lookup;
@@ -270,7 +273,7 @@ public sealed class UniqueStringPool
         }
     }
 
-    private sealed class FrozenGeneration : IColdGeneration
+    private sealed class FrozenGeneration: IColdGeneration
     {
         internal static readonly FrozenGeneration Empty = new(FrozenDictionary<string, string>.Empty);
 
