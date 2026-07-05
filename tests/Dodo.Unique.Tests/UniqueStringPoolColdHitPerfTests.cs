@@ -3,11 +3,8 @@ using System.Diagnostics;
 namespace Dodo.Unique.Tests;
 
 /// <summary>
-/// Cost of an entry's first touch after a rotation: cold-tier lookup + promotion into the
-/// fresh hot tier, per mode. Empirically the promotion insert dominates, burying the
-/// FrozenDictionary-vs-ConcurrentDictionary lookup difference between modes — so these
-/// numbers bound how little the cold-tier structure choice matters to read latency; the
-/// modes genuinely differ in rotation cost, not here.
+/// First touch after a rotation (cold lookup + promote), per mode. The promote insert
+/// dominates, so the cold-tier structure choice barely moves read latency.
 /// </summary>
 [Category("RotationStress")]
 [Category("PerfProof")]

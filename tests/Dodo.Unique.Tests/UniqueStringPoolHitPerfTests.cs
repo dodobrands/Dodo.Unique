@@ -4,10 +4,8 @@ using System.Diagnostics;
 namespace Dodo.Unique.Tests;
 
 /// <summary>
-/// Steady-state hit-path throughput: the cost every canonicalizing read pays. Raw
-/// ConcurrentDictionary lookup over the same keys is printed alongside as the floor the
-/// pool's state read + tier probe adds overhead to. Hit paths are mode-independent (hot
-/// tier only), so one pool suffices.
+/// Steady-state hit cost, with a raw ConcurrentDictionary lookup as the floor. Hit paths
+/// are mode-independent, so one pool suffices.
 /// </summary>
 [Category("RotationStress")]
 [Category("PerfProof")]

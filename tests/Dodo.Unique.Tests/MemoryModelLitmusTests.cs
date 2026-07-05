@@ -3,12 +3,8 @@ using System.Diagnostics.CodeAnalysis;
 namespace Dodo.Unique.Tests;
 
 /// <summary>
-/// Store-buffering (SB) litmus for the exact shape UniqueStringPool's Dekker pair protects:
-/// writer stores into the map then loads _next; rotator stores _next then loads the map.
-/// The forbidden outcome — both sides reading the pre-store value — is permitted with
-/// volatile-only accesses (acquire/release does not order StoreLoad) and must be impossible
-/// once both sides run a full fence. Millions of bare-metal trials per second make this the
-/// primitive-level teeth the integration storms structurally cannot provide.
+/// Store-buffering litmus for the shape the pool's Dekker pair protects: volatile-only
+/// permits the both-read-old outcome, a full fence must forbid it.
 /// </summary>
 [Category("RotationStress")]
 [Category("MemoryModel")]
@@ -42,8 +38,7 @@ public sealed class MemoryModelLitmusTests
                           "(>0 means this host reorders StoreLoad and the pool's full fences are load-bearing; " +
                           "0 means this host/JIT currently cannot exhibit the race the fences guard against)");
 
-        // Informational witness: the reorder count is hardware/JIT-dependent and may
-        // legitimately be zero on strong or lightly-loaded machines, so no upper assert.
+        // Host-dependent witness — zero is legitimate on strong hosts, so no upper assert.
         await Assert.That(violations).IsGreaterThanOrEqualTo(0);
     }
 

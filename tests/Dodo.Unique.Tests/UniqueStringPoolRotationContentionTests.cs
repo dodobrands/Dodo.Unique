@@ -54,12 +54,7 @@ public sealed class UniqueStringPoolRotationContentionTests
         for (var i = 0; i < CheckedSetSize; i++)
             anchors[i] = pool.Make(checkedValues[i].AsSpan());
 
-        // A reference flip is a contract violation only when the value was provably
-        // touched within the retention floor. A starved value — every worker stalled
-        // past two rotations, routine on tiny CI runners — is evictable, and its flip
-        // is the pool honoring the spec, not breaking it. Half the floor as the window
-        // absorbs timestamp-vs-Make ordering skew; real races surface as floods of
-        // microsecond-gap flips, never lone boundary cases.
+        // A flip counts only if touched within half the retention floor — starved values are evictable by contract.
         var violationWindowTicks = (long)(Stopwatch.Frequency * Retention.TotalSeconds / 2);
         var lastTouchTicks = new long[CheckedSetSize];
         var stampNow = Stopwatch.GetTimestamp();
@@ -102,15 +97,10 @@ public sealed class UniqueStringPoolRotationContentionTests
         if (stuck > 0)
             errors.Enqueue(new TimeoutException($"{stuck} worker(s) did not terminate within {joinDeadline}."));
 
-        // Frozen mode completes the last rotation's freeze+swap on the thread pool: joins
-        // returning only means workers stopped calling Make, not that state has caught up.
-        // Reading losses/canary against a stale generation would false-positive a loss. No-op
-        // in sealed mode, where the swap is already synchronous by the time Make returns.
+        // Frozen mode swaps on the thread pool: let state catch up before reading losses/canary.
         WaitForRotationIdle(pool);
 
-        // Belt over the mid-storm classification: by probe time most gaps exceed the
-        // window (joins + the idle wait), so this only fires on flips of provably
-        // still-live values — e.g. a wholesale extinction right at storm end.
+        // Belt over the mid-storm classification; probe-time gaps usually exceed the window.
         var losses = new List<string>();
         for (var i = 0; i < CheckedSetSize; i++)
             if (!ReferenceEquals(pool.Make(checkedValues[i].AsSpan()), anchors[i]) &&
@@ -157,8 +147,7 @@ public sealed class UniqueStringPoolRotationContentionTests
                     {
                         if (now - before < violationWindowTicks)
                             duplications.Enqueue(value);
-                        // Re-pin either way: after a legitimate eviction the new
-                        // canonical is the reference to hold stable from here on.
+                        // Re-pin so one legitimate eviction cannot flood the report.
                         seen[value] = made;
                     }
                 }

@@ -3,10 +3,8 @@ using System.Diagnostics;
 namespace Dodo.Unique.Tests;
 
 /// <summary>
-/// A/B cost of the writer-side Dekker fence on the insert path. With retention far above
-/// the run length no rotation ever fires, so frozen and sealed pools execute byte-identical
-/// paths except for the conditional <c>Interlocked.MemoryBarrier()</c> after a winning
-/// GetOrAdd — a direct fence-cost isolation on one binary.
+/// Fence-cost A/B: retention far above run length means no rotation ever fires, so the
+/// modes differ only by the conditional barrier after a winning GetOrAdd.
 /// </summary>
 [Category("RotationStress")]
 [Category("PerfProof")]
