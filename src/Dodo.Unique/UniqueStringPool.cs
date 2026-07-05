@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Dodo.Unique;
 
@@ -212,7 +213,7 @@ public sealed class UniqueStringPool
 
     private interface IColdGeneration
     {
-        bool TryGet(ReadOnlySpan<char> key, out string value);
+        bool TryGet(ReadOnlySpan<char> key, [NotNullWhen(true)] out string? value);
     }
 
     private sealed class State
@@ -244,8 +245,8 @@ public sealed class UniqueStringPool
             _lookup = Map.GetAlternateLookup<ReadOnlySpan<char>>();
         }
 
-        public bool TryGet(ReadOnlySpan<char> key, out string value) =>
-            _lookup.TryGetValue(key, out value!);
+        public bool TryGet(ReadOnlySpan<char> key, [NotNullWhen(true)] out string? value) =>
+            _lookup.TryGetValue(key, out value);
 
         // Dekker fence pairing with the writer's after GetOrAdd. Without it the
         // rotator's snapshot may miss a racing writer's add while the writer's
@@ -284,7 +285,7 @@ public sealed class UniqueStringPool
             _lookup = map.GetAlternateLookup<ReadOnlySpan<char>>();
         }
 
-        public bool TryGet(ReadOnlySpan<char> key, out string value) =>
-            _lookup.TryGetValue(key, out value!);
+        public bool TryGet(ReadOnlySpan<char> key, [NotNullWhen(true)] out string? value) =>
+            _lookup.TryGetValue(key, out value);
     }
 }
