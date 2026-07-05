@@ -59,7 +59,7 @@ public sealed class UniqueStringPool
         MaxLength = maxLength;
         _useFrozenGeneration = useFrozenGeneration;
         _steadyIntervalMs = Math.Max(1, (long)minRetention.TotalMilliseconds);
-        _state = new State(new Generation(), FrozenGeneration.Empty, NextRotateAt());
+        _state = new State(new Generation(fenceOnAdd: useFrozenGeneration), FrozenGeneration.Empty, NextRotateAt());
     }
 
     /// <summary>
@@ -160,7 +160,7 @@ public sealed class UniqueStringPool
 
             var currentCount = current.Hot.Map.Count;
             var seed = currentCount + (currentCount >> 2); // x1.25
-            var newHot = current.Hot.SealTo(new Generation(seed));
+            var newHot = current.Hot.SealTo(new Generation(seed, _useFrozenGeneration));
 
             if (_useFrozenGeneration)
             {
@@ -234,10 +234,12 @@ public sealed class UniqueStringPool
     {
         internal readonly ConcurrentDictionary<string, string> Map;
         private readonly ConcurrentDictionary<string, string>.AlternateLookup<ReadOnlySpan<char>> _lookup;
+        private readonly bool _fenceOnAdd;
         private Generation? _next;
 
-        internal Generation(int capacity = 0)
+        internal Generation(int capacity = 0, bool fenceOnAdd = true)
         {
+            _fenceOnAdd = fenceOnAdd;
             Map = new ConcurrentDictionary<string, string>(
                 concurrencyLevel: Environment.ProcessorCount,
                 capacity: capacity,
@@ -267,8 +269,14 @@ public sealed class UniqueStringPool
 
             var stored = target.Map.GetOrAdd(candidate, candidate);
 
-            // Dekker fence pairing with SealTo.
-            Interlocked.MemoryBarrier();
+            // Dekker fence pairing with SealTo — needed only where a snapshot can race
+            // this add (frozen mode): either the freeze sees the entry or this re-read
+            // sees the seal. Sealed mode has no snapshot to lose to — the map itself
+            // becomes the cold tier, so a racing add stays reachable — and a writer
+            // stalled across a whole era re-reads a seal old enough that the plain
+            // volatile load below cannot miss it.
+            if (target._fenceOnAdd)
+                Interlocked.MemoryBarrier();
             sealedTo = Volatile.Read(ref target._next);
             return sealedTo != null ? sealedTo.AddOrGet(stored) : stored;
         }
