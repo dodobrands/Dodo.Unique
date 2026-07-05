@@ -9,6 +9,7 @@ namespace Dodo.Unique.Tests;
 public sealed class UniqueStringPoolRotationPerfTests
 {
     [Test]
+    [NotInParallel]
     [Arguments(true)]
     [Arguments(false)]
     public async Task RotatingCallLatency(bool useFrozenGeneration)
@@ -47,6 +48,7 @@ public sealed class UniqueStringPoolRotationPerfTests
     }
 
     [Test]
+    [NotInParallel]
     public async Task SealedRotationAllocation()
     {
         const int entryCount = 100_000;
