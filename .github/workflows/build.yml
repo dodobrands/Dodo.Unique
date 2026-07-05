@@ -90,7 +90,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          dotnet run --project tests/Dodo.Unique.Tests/Dodo.Unique.Tests.csproj -c Release --no-build -f ${{ matrix.tfm }} -- --treenode-filter "/*/*/*/*[Category=RotationStress]" --output Detailed | tee stress-output.log
+          dotnet run --project tests/Dodo.Unique.Tests/Dodo.Unique.Tests.csproj -c Release --no-build -f ${{ matrix.tfm }} -- --treenode-filter "/*/*/*/*[Category=RotationStress]" --output Detailed --no-ansi | tee stress-output.log
 
       - name: perf numbers to job summary
         if: always()
@@ -99,7 +99,7 @@ jobs:
           {
             echo "### Perf numbers (${{ matrix.runner }} / ${{ matrix.tfm }})"
             echo '```'
-            grep -hE "\[(fence-bench|hit-bench|coldhit-bench|litmus|RotatingCallLatency|SealedRotationAllocation)" stress-output.log | sed 's/^[[:space:]]*//' | sort -u || echo "no perf lines captured"
+            sed -E $'s/\x1b\\[[0-9;]*m//g' stress-output.log | grep -hE "\[(fence-bench|hit-bench|coldhit-bench|litmus|RotatingCallLatency|SealedRotationAllocation)" | sed -E 's/^[[:space:]]+//' | sort -u || echo "no perf lines captured"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
