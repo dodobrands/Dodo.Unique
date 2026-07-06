@@ -196,6 +196,7 @@ public sealed class UniqueStringPool
 
     private long NextRotateAt() => Environment.TickCount64 + _steadyIntervalMs;
 
+    // TODO: Not need from .net 11: https://github.com/dotnet/runtime/pull/128300
     private static FrozenDictionary<string, string> Freeze(ConcurrentDictionary<string, string> source, int capacity)
     {
         var snapshot = new Dictionary<string, string>(capacity, StringComparer.Ordinal);
