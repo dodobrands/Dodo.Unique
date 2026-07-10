@@ -169,7 +169,6 @@ public sealed class UniqueStringPool
             }
             else
             {
-                // Publish-time deadline: a stall would otherwise spawn a µs generation that evicts everything it never saw.
                 Volatile.Write(ref _state, new State(newHot, current.Hot, NextRotateAt()));
             }
         }
@@ -185,7 +184,6 @@ public sealed class UniqueStringPool
         try
         {
             var newCold = new FrozenGeneration(Freeze(sealedHot.Map, seed));
-            // Publish-time deadline — here the freeze itself is the stall.
             Volatile.Write(ref _state, new State(newHot, newCold, NextRotateAt()));
         }
         finally
