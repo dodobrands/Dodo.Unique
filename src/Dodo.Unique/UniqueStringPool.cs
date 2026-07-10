@@ -89,7 +89,7 @@ public sealed class UniqueStringPool
 
         var state = Volatile.Read(ref _state);
         if (state.Hot.TryGet(chars, out var hit))
-            return hit;
+            return state.Hot.Canonical(hit);
         if (state.Cold.TryGet(chars, out hit))
             return state.Hot.AddOrGet(hit);
 
@@ -119,7 +119,7 @@ public sealed class UniqueStringPool
 
         var state = Volatile.Read(ref _state);
         if (state.Hot.TryGet(value, out var hit))
-            return hit;
+            return state.Hot.Canonical(hit);
         if (state.Cold.TryGet(value, out hit))
             return state.Hot.AddOrGet(hit);
 
@@ -205,7 +205,7 @@ public sealed class UniqueStringPool
         return snapshot.ToFrozenDictionary(StringComparer.Ordinal);
     }
 
-    private interface IColdGeneration
+    internal interface IColdGeneration
     {
         bool TryGet(ReadOnlySpan<char> key, [NotNullWhen(true)] out string? value);
     }
@@ -224,7 +224,7 @@ public sealed class UniqueStringPool
         }
     }
 
-    private sealed class Generation: IColdGeneration
+    internal sealed class Generation: IColdGeneration
     {
         internal readonly ConcurrentDictionary<string, string> Map;
         private readonly ConcurrentDictionary<string, string>.AlternateLookup<ReadOnlySpan<char>> _lookup;
@@ -248,20 +248,26 @@ public sealed class UniqueStringPool
         internal Generation SealTo(Generation next) =>
             Interlocked.CompareExchange(ref _next, next, null) ?? next;
 
+        // A hit in a just-sealed map may be unreconciled with the seal target; forward it before exposing.
+        internal string Canonical(string hit) =>
+            Volatile.Read(ref _next) is null ? hit : AddOrGet(hit);
+
+        // Converge in every generation before following the seal — skipping a sealed map could mint a duplicate past an instance already handed out.
         internal string AddOrGet(string candidate)
         {
             var target = this;
-            Generation? sealedTo;
-            while ((sealedTo = Volatile.Read(ref target._next)) != null)
+            while (true)
+            {
+                candidate = target.Map.GetOrAdd(candidate, candidate);
+
+                // Dekker fence pairing with SealTo — only the frozen snapshot can race this add; sealed cold IS this map.
+                if (target._fenceOnAdd)
+                    Interlocked.MemoryBarrier();
+                var sealedTo = Volatile.Read(ref target._next);
+                if (sealedTo is null)
+                    return candidate;
                 target = sealedTo;
-
-            var stored = target.Map.GetOrAdd(candidate, candidate);
-
-            // Dekker fence pairing with SealTo — only the frozen snapshot can race this add; sealed cold IS this map.
-            if (target._fenceOnAdd)
-                Interlocked.MemoryBarrier();
-            sealedTo = Volatile.Read(ref target._next);
-            return sealedTo != null ? sealedTo.AddOrGet(stored) : stored;
+            }
         }
     }
 
