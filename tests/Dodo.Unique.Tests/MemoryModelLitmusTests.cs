@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Runtime.InteropServices;
 
 namespace Dodo.Unique.Tests;
 
@@ -22,11 +23,14 @@ public sealed class MemoryModelLitmusTests
         ProcessWideOnOneSide,
     }
 
-    private int _x;
-#pragma warning disable CS0169 // padding keeps _x and _y on different cache lines
-    private long _p0, _p1, _p2, _p3, _p4, _p5, _p6, _p7;
-#pragma warning restore CS0169
-    private int _y;
+    // Explicit offsets are the only reliable isolation on a managed type: padding fields under the default Auto class layout get reordered and do NOT separate the two locations. 128-byte gaps on every side cover Apple-Silicon cache lines, so _x and _y can never share one.
+    [StructLayout(LayoutKind.Explicit, Size = 384)]
+    private struct Cells
+    {
+        [FieldOffset(128)] internal int X;
+        [FieldOffset(256)] internal int Y;
+    }
+    private Cells _cells;
 
     [Test]
     [NotInParallel]
@@ -74,10 +78,10 @@ public sealed class MemoryModelLitmusTests
             for (var i = 0; i < rounds; i++)
             {
                 gate.SignalAndWait();
-                Volatile.Write(ref _x, 1);
+                Volatile.Write(ref _cells.X, 1);
                 if (mode == FenceMode.FullBothSides)
                     Interlocked.MemoryBarrier();
-                r0 = Volatile.Read(ref _y);
+                r0 = Volatile.Read(ref _cells.Y);
                 gate.SignalAndWait();
             }
         }) { IsBackground = true };
@@ -87,12 +91,12 @@ public sealed class MemoryModelLitmusTests
             for (var i = 0; i < rounds; i++)
             {
                 gate.SignalAndWait();
-                Volatile.Write(ref _y, 1);
+                Volatile.Write(ref _cells.Y, 1);
                 if (mode == FenceMode.FullBothSides)
                     Interlocked.MemoryBarrier();
                 else if (mode == FenceMode.ProcessWideOnOneSide)
                     Interlocked.MemoryBarrierProcessWide();
-                r1 = Volatile.Read(ref _x);
+                r1 = Volatile.Read(ref _cells.X);
                 gate.SignalAndWait();
             }
         }) { IsBackground = true };
@@ -105,8 +109,8 @@ public sealed class MemoryModelLitmusTests
             gate.SignalAndWait();
             if (r0 == 0 && r1 == 0)
                 violations++;
-            _x = 0;
-            _y = 0;
+            _cells.X = 0;
+            _cells.Y = 0;
         }
         t0.Join();
         t1.Join();
