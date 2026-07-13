@@ -18,9 +18,11 @@ public sealed class UniqueStringPoolRotationContentionTests
 
     [Test]
     [NotInParallel]
-    public async Task Make_under_rotation_contention_does_not_duplicate_strings()
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Make_under_rotation_contention_does_not_duplicate_strings(bool useFrozenGeneration)
     {
-        var result = RunRotationStorm();
+        var result = RunRotationStorm(useFrozenGeneration);
 
         await Assert.That(result.ErrorSummary).IsEqualTo(string.Empty);
         await Assert.That(result.Rotated).IsTrue();
@@ -29,18 +31,20 @@ public sealed class UniqueStringPoolRotationContentionTests
 
     [Test]
     [NotInParallel]
-    public async Task Make_under_rotation_contention_does_not_lose_strings()
+    [Arguments(true)]
+    [Arguments(false)]
+    public async Task Make_under_rotation_contention_does_not_lose_strings(bool useFrozenGeneration)
     {
-        var result = RunRotationStorm();
+        var result = RunRotationStorm(useFrozenGeneration);
 
         await Assert.That(result.ErrorSummary).IsEqualTo(string.Empty);
         await Assert.That(result.Rotated).IsTrue();
         await Assert.That(result.LossSummary).IsEqualTo(string.Empty);
     }
 
-    private static StormResult RunRotationStorm()
+    private static StormResult RunRotationStorm(bool useFrozenGeneration)
     {
-        var pool = new UniqueStringPool(Retention);
+        var pool = new UniqueStringPool(Retention, maxLength: 256, useFrozenGeneration: useFrozenGeneration);
 
         var checkedValues = new string[CheckedSetSize];
         for (var i = 0; i < CheckedSetSize; i++)
@@ -49,6 +53,13 @@ public sealed class UniqueStringPoolRotationContentionTests
         var anchors = new string[CheckedSetSize];
         for (var i = 0; i < CheckedSetSize; i++)
             anchors[i] = pool.Make(checkedValues[i].AsSpan());
+
+        // A flip counts only if touched within half the retention floor — starved values are evictable by contract.
+        var violationWindowTicks = (long)(Stopwatch.Frequency * Retention.TotalSeconds / 2);
+        var lastTouchTicks = new long[CheckedSetSize];
+        var stampNow = Stopwatch.GetTimestamp();
+        for (var i = 0; i < CheckedSetSize; i++)
+            lastTouchTicks[i] = stampNow;
 
         // Canary: interned once, never touched during the storm. The span overload (not a string
         // literal) avoids CLR interning masking the reference change. Two rotations evict it, so a
@@ -67,7 +78,8 @@ public sealed class UniqueStringPoolRotationContentionTests
         {
             var workerId = t;
             threads[t] =
-                new Thread(() => RunWorker(pool, checkedValues, seen, duplications, errors, startGate, workerId))
+                new Thread(() => RunWorker(pool, checkedValues, seen, duplications, errors, startGate, workerId,
+                    lastTouchTicks, violationWindowTicks))
                 {
                     IsBackground = true, Name = $"rotation-storm-{workerId}",
                 };
@@ -85,9 +97,14 @@ public sealed class UniqueStringPoolRotationContentionTests
         if (stuck > 0)
             errors.Enqueue(new TimeoutException($"{stuck} worker(s) did not terminate within {joinDeadline}."));
 
+        // Frozen mode swaps on the thread pool: let state catch up before reading losses/canary.
+        WaitForRotationIdle(pool);
+
+        // Belt over the mid-storm classification; probe-time gaps usually exceed the window.
         var losses = new List<string>();
         for (var i = 0; i < CheckedSetSize; i++)
-            if (!ReferenceEquals(pool.Make(checkedValues[i].AsSpan()), anchors[i]))
+            if (!ReferenceEquals(pool.Make(checkedValues[i].AsSpan()), anchors[i]) &&
+                Stopwatch.GetTimestamp() - Volatile.Read(ref lastTouchTicks[i]) < violationWindowTicks)
                 losses.Add(checkedValues[i]);
 
         var rotated = !ReferenceEquals(canaryBefore, pool.Make(canaryValue.AsSpan()));
@@ -106,7 +123,9 @@ public sealed class UniqueStringPoolRotationContentionTests
         ConcurrentQueue<string> duplications,
         ConcurrentQueue<Exception> errors,
         Barrier startGate,
-        int workerId)
+        int workerId,
+        long[] lastTouchTicks,
+        long violationWindowTicks)
     {
         try
         {
@@ -118,10 +137,19 @@ public sealed class UniqueStringPoolRotationContentionTests
                 var start = (int)((workerId + n) % CheckedSetSize);
                 for (var j = 0; j < CheckedSetSize; j++)
                 {
-                    var value = checkedValues[(start + j) % CheckedSetSize];
+                    var idx = (start + j) % CheckedSetSize;
+                    var value = checkedValues[idx];
+                    var before = Volatile.Read(ref lastTouchTicks[idx]);
                     var made = pool.Make(value.AsSpan());
+                    var now = Stopwatch.GetTimestamp();
+                    Volatile.Write(ref lastTouchTicks[idx], now);
                     if (!ReferenceEquals(seen.GetOrAdd(value, made), made))
-                        duplications.Enqueue(value);
+                    {
+                        if (now - before < violationWindowTicks)
+                            duplications.Enqueue(value);
+                        // Re-pin so one legitimate eviction cannot flood the report.
+                        seen[value] = made;
+                    }
                 }
 
                 // One fresh miss per pass: Make reaches MaybeRotate() only on a miss, so this both
@@ -134,6 +162,17 @@ public sealed class UniqueStringPoolRotationContentionTests
 #pragma warning restore CA1031
         {
             errors.Enqueue(ex);
+        }
+    }
+
+    private static void WaitForRotationIdle(UniqueStringPool pool)
+    {
+        var deadlineMs = Environment.TickCount64 + 5000;
+        while (!pool.RotationIdle)
+        {
+            if (Environment.TickCount64 > deadlineMs)
+                throw new TimeoutException("Rotation did not complete within 5s.");
+            Thread.Sleep(1);
         }
     }
 

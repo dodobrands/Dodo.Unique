@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Dodo.Unique;
 
@@ -18,8 +19,15 @@ namespace Dodo.Unique;
 public sealed class UniqueStringPool
 {
     private readonly long _steadyIntervalMs;
+    private readonly bool _useFrozenGeneration;
     private int _rotationInProgress;
     private State _state;
+
+    /// <inheritdoc cref="UniqueStringPool(TimeSpan, int, bool)"/>
+    public UniqueStringPool(TimeSpan minRetention, int maxLength = 256)
+        : this(minRetention, maxLength, useFrozenGeneration: true)
+    {
+    }
 
     /// <summary>
     /// Creates a new pool.
@@ -28,20 +36,30 @@ public sealed class UniqueStringPool
     /// Retention floor after last access. Idle entries evict at delay d where
     /// <paramref name="minRetention"/> ≤ d &lt; 2·<paramref name="minRetention"/>,
     /// via a two-tier hot/cold rotation. Live entries ≤ unique inserts during
-    /// 2·<paramref name="minRetention"/>.
+    /// 2·<paramref name="minRetention"/>. Rotation is driven by misses; under hit-only or
+    /// fully idle traffic, idle entries can outlive the stated bound (memory still does not
+    /// grow).
     /// </param>
     /// <param name="maxLength">
     /// Values longer than this bypass canonicalization: <c>Make(string)</c> returns the input
     /// unchanged, <c>Make(ReadOnlySpan&lt;char&gt;)</c> allocates a fresh <see cref="string"/>.
     /// Caps per-entry memory cost.
     /// </param>
-    public UniqueStringPool(TimeSpan minRetention, int maxLength = 256)
+    /// <param name="useFrozenGeneration">
+    /// <c>true</c> (default) — each rotation snapshots the retiring hot tier into an immutable
+    /// <see cref="FrozenDictionary{TKey,TValue}"/> on the thread pool; fastest cold-tier
+    /// lookups, one background copy per rotation. <c>false</c> — rotation republishes the
+    /// sealed hot map as the cold tier; no copying, no background work, marginally slower
+    /// cold-tier lookups.
+    /// </param>
+    public UniqueStringPool(TimeSpan minRetention, int maxLength, bool useFrozenGeneration)
     {
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(minRetention, TimeSpan.Zero);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxLength);
         MaxLength = maxLength;
+        _useFrozenGeneration = useFrozenGeneration;
         _steadyIntervalMs = Math.Max(1, (long)minRetention.TotalMilliseconds);
-        _state = new State(new Generation(), FrozenGeneration.Empty, Environment.TickCount64 + _steadyIntervalMs);
+        _state = new State(new Generation(fenceOnAdd: useFrozenGeneration), FrozenGeneration.Empty, NextRotateAt());
     }
 
     /// <summary>
@@ -49,7 +67,8 @@ public sealed class UniqueStringPool
     /// this overload for readability or when more knobs are added.
     /// </summary>
     public UniqueStringPool(UniqueStringPoolOptions options)
-        : this((options ?? throw new ArgumentNullException(nameof(options))).MinRetention, options.MaxLength)
+        : this((options ?? throw new ArgumentNullException(nameof(options))).MinRetention, options.MaxLength,
+            options.UseFrozenGeneration)
     {
     }
 
@@ -58,6 +77,8 @@ public sealed class UniqueStringPool
     /// <see cref="UniqueStringConverter"/>) can size their decode buffers consistently.
     /// </summary>
     public int MaxLength { get; }
+
+    internal bool RotationIdle => Volatile.Read(ref _rotationInProgress) == 0;
 
     public string Make(ReadOnlySpan<char> chars)
     {
@@ -68,15 +89,22 @@ public sealed class UniqueStringPool
 
         var state = Volatile.Read(ref _state);
         if (state.Hot.TryGet(chars, out var hit))
-            return hit;
+            return state.Hot.Canonical(hit);
         if (state.Cold.TryGet(chars, out hit))
             return state.Hot.AddOrGet(hit);
 
         MaybeRotate();
 
         var latest = Volatile.Read(ref _state);
-        if (latest.Cold.TryGet(chars, out hit))
+        if (!ReferenceEquals(latest, state))
+        {
+            if (latest.Cold.TryGet(chars, out hit))
+                return latest.Hot.AddOrGet(hit);
+        }
+        // Same state does not mean no rotation: re-probe the live sealed map before minting a duplicate.
+        else if (!RotationIdle && latest.Hot.TryGet(chars, out hit))
             return latest.Hot.AddOrGet(hit);
+
         var value = new string(chars);
         return latest.Hot.AddOrGet(value);
     }
@@ -91,16 +119,23 @@ public sealed class UniqueStringPool
 
         var state = Volatile.Read(ref _state);
         if (state.Hot.TryGet(value, out var hit))
-            return hit;
+            return state.Hot.Canonical(hit);
         if (state.Cold.TryGet(value, out hit))
             return state.Hot.AddOrGet(hit);
 
         MaybeRotate();
 
         var latest = Volatile.Read(ref _state);
-        return latest.Cold.TryGet(value, out hit)
-            ? latest.Hot.AddOrGet(hit)
-            : latest.Hot.AddOrGet(value);
+        if (!ReferenceEquals(latest, state))
+        {
+            if (latest.Cold.TryGet(value, out hit))
+                return latest.Hot.AddOrGet(hit);
+        }
+        // See Make(ReadOnlySpan<char>) — sealed-map re-probe during in-flight rotation.
+        else if (!RotationIdle && latest.Hot.TryGet(value, out hit))
+            return latest.Hot.AddOrGet(hit);
+
+        return latest.Hot.AddOrGet(value);
     }
 
     private void MaybeRotate()
@@ -109,9 +144,11 @@ public sealed class UniqueStringPool
         if (nowMs < Volatile.Read(ref _state).RotateAtMs)
             return;
 
-        if (Interlocked.CompareExchange(ref _rotationInProgress, 1, 0) != 0)
+        if (Volatile.Read(ref _rotationInProgress) != 0 ||
+            Interlocked.CompareExchange(ref _rotationInProgress, 1, 0) != 0)
             return;
 
+        var handedOff = false;
         try
         {
             var current = Volatile.Read(ref _state);
@@ -120,11 +157,34 @@ public sealed class UniqueStringPool
 
             var currentCount = current.Hot.Map.Count;
             var seed = currentCount + (currentCount >> 2); // x1.25
-            var newHot = new Generation(seed);
-            current.Hot.SealTo(newHot);
-            var newCold = new FrozenGeneration(Freeze(current.Hot.Map, seed));
+            var newHot = current.Hot.SealTo(new Generation(seed, _useFrozenGeneration));
 
-            Volatile.Write(ref _state, new State(hot: newHot, cold: newCold, rotateAtMs: nowMs + _steadyIntervalMs));
+            if (_useFrozenGeneration)
+            {
+                ThreadPool.UnsafeQueueUserWorkItem(
+                    static s => s.pool.CompleteFrozenRotation(s.sealedHot, s.newHot, s.seed),
+                    (pool: this, sealedHot: current.Hot, newHot, seed),
+                    preferLocal: false);
+                handedOff = true;
+            }
+            else
+            {
+                Volatile.Write(ref _state, new State(newHot, current.Hot, NextRotateAt()));
+            }
+        }
+        finally
+        {
+            if (!handedOff)
+                Volatile.Write(ref _rotationInProgress, 0);
+        }
+    }
+
+    private void CompleteFrozenRotation(Generation sealedHot, Generation newHot, int seed)
+    {
+        try
+        {
+            var newCold = new FrozenGeneration(Freeze(sealedHot.Map, seed));
+            Volatile.Write(ref _state, new State(newHot, newCold, NextRotateAt()));
         }
         finally
         {
@@ -132,6 +192,9 @@ public sealed class UniqueStringPool
         }
     }
 
+    private long NextRotateAt() => Environment.TickCount64 + _steadyIntervalMs;
+
+    // TODO: Not need from .net 11: https://github.com/dotnet/runtime/pull/128300
     private static FrozenDictionary<string, string> Freeze(ConcurrentDictionary<string, string> source, int capacity)
     {
         var snapshot = new Dictionary<string, string>(capacity, StringComparer.Ordinal);
@@ -140,13 +203,18 @@ public sealed class UniqueStringPool
         return snapshot.ToFrozenDictionary(StringComparer.Ordinal);
     }
 
+    internal interface IColdGeneration
+    {
+        bool TryGet(ReadOnlySpan<char> key, [NotNullWhen(true)] out string? value);
+    }
+
     private sealed class State
     {
         internal readonly Generation Hot;
-        internal readonly FrozenGeneration Cold;
+        internal readonly IColdGeneration Cold;
         internal readonly long RotateAtMs;
 
-        internal State(Generation hot, FrozenGeneration cold, long rotateAtMs)
+        internal State(Generation hot, IColdGeneration cold, long rotateAtMs)
         {
             Hot = hot;
             Cold = cold;
@@ -154,14 +222,16 @@ public sealed class UniqueStringPool
         }
     }
 
-    private sealed class Generation
+    internal sealed class Generation: IColdGeneration
     {
         internal readonly ConcurrentDictionary<string, string> Map;
         private readonly ConcurrentDictionary<string, string>.AlternateLookup<ReadOnlySpan<char>> _lookup;
+        private readonly bool _fenceOnAdd;
         private Generation? _next;
 
-        internal Generation(int capacity = 0)
+        internal Generation(int capacity = 0, bool fenceOnAdd = true)
         {
+            _fenceOnAdd = fenceOnAdd;
             Map = new ConcurrentDictionary<string, string>(
                 concurrencyLevel: Environment.ProcessorCount,
                 capacity: capacity,
@@ -169,37 +239,37 @@ public sealed class UniqueStringPool
             _lookup = Map.GetAlternateLookup<ReadOnlySpan<char>>();
         }
 
-        internal bool TryGet(ReadOnlySpan<char> key, out string value) =>
-            _lookup.TryGetValue(key, out value!);
+        public bool TryGet(ReadOnlySpan<char> key, [NotNullWhen(true)] out string? value) =>
+            _lookup.TryGetValue(key, out value);
 
-        internal void SealTo(Generation next)
-        {
-            Volatile.Write(ref _next, next);
-            // Dekker fence pairing with the writer's after GetOrAdd. Without it the
-            // rotator's snapshot may miss a racing writer's add while the writer's
-            // _next re-read misses this seal — transient duplicate strings at next rotation.
-            Interlocked.MemoryBarrier();
-        }
+        // The CAS doubles as the rotator's Dekker fence; idempotent so a retried rotation reuses an orphaned seal target.
+        internal Generation SealTo(Generation next) =>
+            Interlocked.CompareExchange(ref _next, next, null) ?? next;
 
+        // A hit in a just-sealed map may be unreconciled with the seal target; forward it before exposing.
+        internal string Canonical(string hit) =>
+            Volatile.Read(ref _next) is null ? hit : AddOrGet(hit);
+
+        // Converge in every generation before following the seal — skipping a sealed map could mint a duplicate past an instance already handed out.
         internal string AddOrGet(string candidate)
         {
             var target = this;
-            Generation? sealedTo;
-            while ((sealedTo = Volatile.Read(ref target._next)) != null)
+            while (true)
+            {
+                candidate = target.Map.GetOrAdd(candidate, candidate);
+
+                // Dekker fence pairing with SealTo — only the frozen snapshot can race this add; sealed cold IS this map.
+                if (target._fenceOnAdd)
+                    Interlocked.MemoryBarrier();
+                var sealedTo = Volatile.Read(ref target._next);
+                if (sealedTo is null)
+                    return candidate;
                 target = sealedTo;
-
-            var stored = target.Map.GetOrAdd(candidate, candidate);
-            if (!ReferenceEquals(stored, candidate))
-                return stored;
-
-            // Dekker fence pairing with SealTo.
-            Interlocked.MemoryBarrier();
-            sealedTo = Volatile.Read(ref target._next);
-            return sealedTo != null ? sealedTo.AddOrGet(candidate) : candidate;
+            }
         }
     }
 
-    private sealed class FrozenGeneration
+    private sealed class FrozenGeneration: IColdGeneration
     {
         internal static readonly FrozenGeneration Empty = new(FrozenDictionary<string, string>.Empty);
 
@@ -210,7 +280,7 @@ public sealed class UniqueStringPool
             _lookup = map.GetAlternateLookup<ReadOnlySpan<char>>();
         }
 
-        internal bool TryGet(ReadOnlySpan<char> key, out string value) =>
-            _lookup.TryGetValue(key, out value!);
+        public bool TryGet(ReadOnlySpan<char> key, [NotNullWhen(true)] out string? value) =>
+            _lookup.TryGetValue(key, out value);
     }
 }

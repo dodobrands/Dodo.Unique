@@ -7,9 +7,12 @@ namespace Dodo.Unique;
 /// </summary>
 public sealed class UniqueStringPoolOptions
 {
-    /// <inheritdoc cref="UniqueStringPool(TimeSpan, int)" path="/param[@name='minRetention']"/>
+    /// <inheritdoc cref="UniqueStringPool(TimeSpan, int, bool)" path="/param[@name='minRetention']"/>
     public required TimeSpan MinRetention { get; init; }
 
-    /// <inheritdoc cref="UniqueStringPool(TimeSpan, int)" path="/param[@name='maxLength']"/>
+    /// <inheritdoc cref="UniqueStringPool(TimeSpan, int, bool)" path="/param[@name='maxLength']"/>
     public int MaxLength { get; init; } = 256;
+
+    /// <inheritdoc cref="UniqueStringPool(TimeSpan, int, bool)" path="/param[@name='useFrozenGeneration']"/>
+    public bool UseFrozenGeneration { get; init; } = true;
 }
