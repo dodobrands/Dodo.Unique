@@ -3,11 +3,17 @@
         <PackageId>Dodo.Unique.NewtonsoftJson</PackageId>
         <Description>Newtonsoft.Json addon for Dodo.Unique: a JsonConverter&lt;string&gt; that routes deserialized strings through a UniqueStringPool.</Description>
         <PackageTags>string;canonicalization;interning;deduplication;json;newtonsoft</PackageTags>
-        <IsPackable>true</IsPackable>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
         <IncludeSymbols>true</IncludeSymbols>
         <SymbolPackageFormat>snupkg</SymbolPackageFormat>
         <MinVerTagPrefix>v</MinVerTagPrefix>
+        <EnablePackageValidation>true</EnablePackageValidation>
+        <PackageValidationBaselineVersion>1.1.0</PackageValidationBaselineVersion>
     </PropertyGroup>
+    <ItemGroup>
+        <None Include="../../README.md" Pack="true" PackagePath="/" />
+    </ItemGroup>
     <ItemGroup>
         <ProjectReference Include="..\Dodo.Unique\Dodo.Unique.csproj" />
         <PackageReference Include="Newtonsoft.Json" />
