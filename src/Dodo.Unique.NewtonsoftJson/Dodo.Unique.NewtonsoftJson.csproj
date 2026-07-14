@@ -2,7 +2,7 @@
     <PropertyGroup>
         <PackageId>Dodo.Unique.NewtonsoftJson</PackageId>
         <Description>Newtonsoft.Json addon for Dodo.Unique: a JsonConverter&lt;string&gt; that routes deserialized strings through a UniqueStringPool.</Description>
-        <PackageTags>string;canonicalization;interning;deduplication;json;newtonsoft</PackageTags>
+        <PackageTags>string;stringpool;pool;pooling;intern;interning;canonicalization;deduplication;memory;json;newtonsoft;json.net</PackageTags>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <PackageReadmeFile>README.md</PackageReadmeFile>
         <IncludeSymbols>true</IncludeSymbols>
