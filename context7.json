@@ -1,4 +1,17 @@
 {
+  "$schema": "https://context7.com/schema/context7.json",
   "url": "https://context7.com/dodobrands/dodo.unique",
-  "public_key": "pk_0g7lNzmKG9SoyKjxddBqA"
+  "public_key": "pk_0g7lNzmKG9SoyKjxddBqA",
+  "projectTitle": "Dodo.Unique",
+  "description": "String deduplication pool for .NET that returns one canonical string instance per equal value, so repeated reads share memory and become reference-equal. Time-based eviction with configurable minRetention and maxLength. Includes System.Text.Json and Newtonsoft.Json converters for zero-effort deserialization dedup. Not based on String.Intern or WeakReference. Inspired by Go's unique package. .NET 9+.",
+  "folders": [],
+  "excludeFolders": ["tests", ".github", ".worktrees"],
+  "rules": [
+    "minRetention is a lower bound, not an upper bound: a value stays reference-equal for at least minRetention after last access and is evicted between minRetention and 2x minRetention — the opposite of MemoryCache/Caffeine expiry semantics, deliberate for canonicalization.",
+    "Reuse one UniqueStringPool per logical domain; worst-case live entry count is bounded by unique inserts during 2x minRetention, and per-entry cost is bounded by maxLength (default 256).",
+    "Use the ReadOnlySpan<char> overload of Make for zero-allocation lookup of already-pooled values.",
+    "UniqueStringConverter (System.Text.Json) and UniqueJsonStringConverter (Newtonsoft.Json) canonicalize on read and pass writes through unchanged — safe to attach to round-trip serializer options.",
+    "The System.Text.Json converter's stack buffer defaults to 256 chars with a 1024-char hard ceiling; raise stackBufferLength only when the pool's MaxLength is higher and a benefit is measured.",
+    "Requires .NET 9+ (relies on ConcurrentDictionary/FrozenDictionary GetAlternateLookup<ReadOnlySpan<char>>); Dodo.Unique depends on the BCL only, Dodo.Unique.NewtonsoftJson adds the Newtonsoft.Json converter."
+  ]
 }
