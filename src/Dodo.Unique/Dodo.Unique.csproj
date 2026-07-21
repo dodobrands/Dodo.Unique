@@ -2,12 +2,18 @@
     <PropertyGroup>
         <PackageId>Dodo.Unique</PackageId>
         <Description>Time-bounded string canonicalization (one canonical instance per equal value) with a System.Text.Json converter. Inspired by Go's `unique` package.</Description>
-        <PackageTags>string;canonicalization;interning;deduplication;json;system.text.json</PackageTags>
-        <IsPackable>true</IsPackable>
+        <PackageTags>unique;string;stringpool;pool;pooling;intern;interning;canonicalization;deduplication;memory;allocation;performance;json;system.text.json</PackageTags>
+        <PackageLicenseExpression>MIT</PackageLicenseExpression>
+        <PackageReadmeFile>README.md</PackageReadmeFile>
         <IncludeSymbols>true</IncludeSymbols>
         <SymbolPackageFormat>snupkg</SymbolPackageFormat>
         <MinVerTagPrefix>v</MinVerTagPrefix>
+        <EnablePackageValidation>true</EnablePackageValidation>
+        <PackageValidationBaselineVersion>1.1.0</PackageValidationBaselineVersion>
     </PropertyGroup>
+    <ItemGroup>
+        <None Include="../../README.md" Pack="true" PackagePath="/" />
+    </ItemGroup>
     <ItemGroup>
         <PackageReference Include="MinVer" PrivateAssets="all" />
     </ItemGroup>
